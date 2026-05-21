@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+# shellcheck source=script/local-only/lib.sh
+source "$ROOT/script/local-only/lib.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage: script/local-only/package [--skip-verify] [--debug]
+
+Runs local-only verification and then invokes the platform packaging script.
+
+Environment:
+  LOCAL_ONLY_VERIFY_ARGS  Extra arguments passed to script/local-only/verify.
+USAGE
+}
+
+SKIP_VERIFY=false
+DEBUG=false
+
+while (( "$#" )); do
+  case "$1" in
+    --skip-verify)
+      SKIP_VERIFY=true
+      shift
+      ;;
+    --debug)
+      DEBUG=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      local_only_die "unknown argument: $1"
+      ;;
+  esac
+done
+
+cd "$ROOT"
+
+if [[ "$SKIP_VERIFY" == false ]]; then
+  local_only_print_header "Running local-only verification before packaging"
+  VERIFY_ARGS=()
+  if [[ -n "${LOCAL_ONLY_VERIFY_ARGS:-}" ]]; then
+    read -r -a VERIFY_ARGS <<< "$LOCAL_ONLY_VERIFY_ARGS"
+  fi
+  script/local-only/verify "${VERIFY_ARGS[@]}"
+fi
+
+local_only_print_header "Packaging local-only desktop artifact"
+case "$(uname -s)" in
+  Darwin)
+    if [[ "$DEBUG" == true ]]; then
+      script/macos/bundle --nosign --nouniversal --debug -c local
+    else
+      script/macos/bundle --nosign --nouniversal -c local
+    fi
+    ;;
+  Linux)
+    if [[ "$DEBUG" == true ]]; then
+      script/linux/bundle --debug -c local
+    else
+      script/linux/bundle -c local
+    fi
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    if command -v pwsh >/dev/null 2>&1; then
+      if [[ "$DEBUG" == true ]]; then
+        pwsh script/windows/bundle.ps1 -DEBUG_BUILD -CHANNEL local
+      else
+        pwsh script/windows/bundle.ps1 -CHANNEL local
+      fi
+    else
+      local_only_die "Windows packaging requires pwsh"
+    fi
+    ;;
+  *)
+    local_only_die "unsupported packaging platform: $(uname -s)"
+    ;;
+esac

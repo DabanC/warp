@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+# shellcheck source=script/local-only/lib.sh
+source "$ROOT/script/local-only/lib.sh"
+
+cd "$ROOT"
+
+local_only_print_header "Release source state"
+git status --short
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  local_only_die "working tree must be clean before release check"
+fi
+
+local_only_print_header "Running local-only verification"
+script/local-only/verify
+
+local_only_print_header "Manual smoke checklist"
+cat <<'CHECKLIST'
+Confirm these before publishing the packaged artifact:
+
+[ ] App launches without sign-in, sign-up, account, or team prompts.
+[ ] Core terminal opens and accepts input.
+[ ] Local settings open.
+[ ] Account, team, billing, upgrade, Warp Drive cloud, sharing, cloud notebook, managed secret, quota, and out-of-credits UI surfaces are absent or unreachable.
+[ ] AI settings expose API key, Base URL, and model configuration when a model is required.
+[ ] With no AI configuration, AI features show a local configuration error.
+[ ] With AI configured, the only AI request goes to the configured Base URL.
+[ ] Provider 401, 403, 429, and 5xx responses do not trigger Warp login, quota, or upgrade UI.
+[ ] Startup produces no background external network requests.
+CHECKLIST
