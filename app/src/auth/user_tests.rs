@@ -40,3 +40,28 @@ fn test_parse_user_profile() -> Result<()> {
 fn test_user_global_skills_defaults_to_empty() {
     assert_eq!(User::test().global_skills, Vec::<String>::new());
 }
+
+#[test]
+fn test_local_installation_user_is_not_remote_or_anonymous() {
+    let installation_id = uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555")
+        .expect("valid uuid");
+
+    let user = User::local_installation(installation_id);
+
+    assert_eq!(
+        user.local_id.as_str(),
+        "local-installation-11111111-2222-3333-4444-555555555555"
+    );
+    assert_eq!(user.metadata.email, "local@warp.local");
+    assert_eq!(user.metadata.display_name.as_deref(), Some("Local User"));
+    assert_eq!(user.metadata.photo_url, None);
+    assert!(user.is_onboarded);
+    assert!(!user.needs_sso_link);
+    assert_eq!(user.anonymous_user_type, None);
+    assert!(!user.is_user_anonymous());
+    assert!(!user.is_on_work_domain);
+    assert_eq!(user.linked_at, None);
+    assert_eq!(user.personal_object_limits, None);
+    assert_eq!(user.principal_type, PrincipalType::User);
+    assert!(user.global_skills.is_empty());
+}
