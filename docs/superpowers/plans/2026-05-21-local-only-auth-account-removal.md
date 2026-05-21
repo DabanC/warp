@@ -4,10 +4,1545 @@
 
 **Goal:** Remove Warp login, registration, auth state, remote anonymous user creation, and account prompts while preserving local terminal startup.
 
-**Architecture:** Replace remote user requirements with a local installation identity and remove auth UI entry points before pruning auth dependencies. Each task compiles before moving to the next dependency layer.
+**Architecture:** Replace remote user requirements with a local installation identity and remove auth UI entry points before pruning auth dependencies. Each task compiles before moving to the next dependency layer. This plan leaves broad billing/cloud/telemetry dependency pruning to follow-up plans, but it makes account and auth flows unreachable from normal local startup.
 
 **Tech Stack:** Rust, Cargo, Warp app modules, local-only verification scripts.
 
 ---
 
 This plan is intentionally separate from the foundation plan. It starts after `script/local-only/verify --self-test` passes and the foundation patch stack has been exported.
+
+## Implementation Notes
+
+- Work from the isolated worktree on branch `make-warp-free`.
+- Keep commits small and semantic. Commit after each task.
+- Use the existing Warp UI design system. If touching UI controls, reuse existing shared button themes; do not add one-off colors or modify shared themes.
+- Do not remove remote/cloud/billing crates wholesale in this plan. The goal here is to remove auth/account entry points and remote anonymous-user creation while keeping the app compiling. Dependency pruning belongs in later plans once unreachable surfaces are deleted.
+- The current static verifier is expected to keep failing after this plan because billing, telemetry, cloud, Warp Drive, GraphQL, and server modules still exist. For this plan, run `script/local-only/verify --self-test` and targeted Rust checks. The full `script/local-only/verify --static-only` is a later acceptance gate.
+- When a task removes UI pathways, also remove the matching debug/global action if present so hidden actions do not keep the flow reachable.
+
+## File Responsibility Map
+
+- `app/src/auth/anonymous_id.rs`: existing persisted UUID helper. Reuse this UUID as the stable local installation identity seed.
+- `app/src/auth/user.rs`: add a local-only `User::local_installation(Uuid)` constructor and tests. The local user must not look anonymous, must not have account metadata, and must be marked onboarded.
+- `app/src/auth/auth_state.rs`: initialize app auth state to the local user with no remote credentials, stop loading API-key/Firebase/secure-storage auth during GUI startup, and make local identity count as ready for local terminal startup without exposing remote access tokens.
+- `app/src/auth/auth_manager.rs`: make remote account operations inert: no user refresh, no Firebase anonymous-user creation, no browser login/sign-up URLs, no login-gated auth events, no server onboarded writes.
+- `app/src/auth/auth_manager_tests.rs`: replace redirect/logout persistence tests with local-only tests that prove no remote auth state or account prompts are created.
+- `app/src/auth/login_slide.rs` and `app/src/auth/auth_view_modal.rs`: remove login-later branches that create Firebase anonymous users; login-later should only emit the local skipped-login event.
+- `app/src/server/server_api/auth.rs`: keep server auth code compiling while moving GraphQL anonymous-user conversion out of auth user types; broad server/cloud pruning is deferred to later plans.
+- `app/src/root_view.rs`: send desktop startup directly to local terminal/onboarding paths and remove post-onboarding login requirements and upgrade/login browser actions from onboarding.
+- `app/src/workspace/global_actions.rs`: remove remote anonymous-user debug action and make app logout global actions no-op or local-only safe.
+- `app/src/app_menus.rs`: remove the visible app-menu `Log out` entry.
+- `app/src/auth/mod.rs`: make exported logout helpers local-only no-ops so existing call sites remain compile-safe until their UI is removed in follow-up tasks.
+- `script/local-only/verify`: add an auth/account targeted scan so this plan has a durable automated guard even before the full static scan passes.
+
+---
+
+### Task 1: Add a Local Installation User
+
+**Files:**
+- Modify: `app/src/auth/user.rs`
+- Test: `app/src/auth/user_tests.rs`
+
+- [ ] **Step 1: Add a failing test for the local installation user**
+
+Add this test to `app/src/auth/user_tests.rs` after `test_user_global_skills_defaults_to_empty`:
+
+```rust
+#[test]
+fn test_local_installation_user_is_not_remote_or_anonymous() {
+    let installation_id = uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555")
+        .expect("valid uuid");
+
+    let user = User::local_installation(installation_id);
+
+    assert_eq!(
+        user.local_id.as_str(),
+        "local-installation-11111111-2222-3333-4444-555555555555"
+    );
+    assert_eq!(user.metadata.email, "local@warp.local");
+    assert_eq!(user.metadata.display_name.as_deref(), Some("Local User"));
+    assert_eq!(user.metadata.photo_url, None);
+    assert!(user.is_onboarded);
+    assert!(!user.needs_sso_link);
+    assert_eq!(user.anonymous_user_type, None);
+    assert!(!user.is_user_anonymous());
+    assert!(!user.is_on_work_domain);
+    assert_eq!(user.linked_at, None);
+    assert_eq!(user.personal_object_limits, None);
+    assert_eq!(user.principal_type, PrincipalType::User);
+    assert!(user.global_skills.is_empty());
+}
+```
+
+- [ ] **Step 2: Run the user test and verify it fails**
+
+Run:
+
+```bash
+cargo test -p warp auth::user::tests::test_local_installation_user_is_not_remote_or_anonymous
+```
+
+Expected: FAIL with a compile error like:
+
+```text
+error[E0599]: no function or associated item named `local_installation` found for struct `User`
+```
+
+- [ ] **Step 3: Implement the local user constructor**
+
+In `app/src/auth/user.rs`, add this method inside `impl User`, immediately after the existing `pub fn test() -> Self` method:
+
+```rust
+    pub fn local_installation(installation_id: uuid::Uuid) -> Self {
+        Self {
+            local_id: UserUid::new(&format!("local-installation-{installation_id}")),
+            metadata: UserMetadata {
+                email: "local@warp.local".to_string(),
+                display_name: Some("Local User".to_string()),
+                photo_url: None,
+            },
+            is_onboarded: true,
+            needs_sso_link: false,
+            anonymous_user_type: None,
+            is_on_work_domain: false,
+            linked_at: None,
+            personal_object_limits: None,
+            principal_type: PrincipalType::User,
+            global_skills: Vec::new(),
+        }
+    }
+```
+
+Do not add a remote-account email, Warp domain email, Firebase metadata, anonymous user type, personal object limits, or global skills.
+
+- [ ] **Step 4: Run the user tests and verify they pass**
+
+Run:
+
+```bash
+cargo test -p warp auth::user::tests
+```
+
+Expected: all tests in `auth::user::tests` PASS.
+
+- [ ] **Step 5: Commit Task 1**
+
+Run:
+
+```bash
+git status --short
+git add app/src/auth/user.rs app/src/auth/user_tests.rs
+git commit -m "$(cat <<'EOF'
+local-only: add local installation user
+EOF
+)"
+```
+
+---
+
+### Task 2: Initialize AuthState Locally Without Remote Credentials
+
+**Files:**
+- Modify: `app/src/auth/auth_state.rs`
+- Test: `app/src/auth/auth_state.rs`
+
+- [ ] **Step 1: Add local-only auth state tests**
+
+Add this test module at the end of `app/src/auth/auth_state.rs`, before the `AuthStateProvider` struct if there is no test module there yet, or inside the existing test module if one exists:
+
+```rust
+#[cfg(test)]
+mod local_only_tests {
+    use super::*;
+
+    #[test]
+    fn local_only_state_has_user_without_remote_credentials() {
+        let state = AuthState::new_local_for_test(Uuid::parse_str(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        )
+        .expect("valid uuid"));
+
+        assert!(state.is_logged_in());
+        assert!(!state.is_anonymous_or_logged_out());
+        assert_eq!(
+            state.user_id().expect("local user id").as_str(),
+            "local-installation-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        );
+        assert_eq!(state.user_email().as_deref(), Some("local@warp.local"));
+        assert_eq!(state.credentials(), None);
+        assert_eq!(state.get_access_token_ignoring_validity(), None);
+        assert!(!state.is_api_key_authenticated());
+        assert_eq!(state.api_key(), None);
+        assert_eq!(state.global_skills(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn local_only_persist_action_does_not_touch_secure_storage() {
+        let state = AuthState::new_local_for_test(Uuid::parse_str(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        )
+        .expect("valid uuid"));
+
+        assert!(matches!(state.persist_action(), PersistAction::DoNothing));
+    }
+}
+```
+
+- [ ] **Step 2: Run the new tests and verify they fail**
+
+Run:
+
+```bash
+cargo test -p warp auth::auth_state::local_only_tests
+```
+
+Expected: FAIL with a compile error like:
+
+```text
+error[E0599]: no function or associated item named `new_local_for_test` found for struct `AuthState`
+```
+
+- [ ] **Step 3: Add a local constructor and make no-credential local user count as logged in**
+
+In `app/src/auth/auth_state.rs`, update the `impl AuthState` block as follows.
+
+Add this helper immediately after the existing `fn new(ctx: &AppContext) -> Self` method:
+
+```rust
+    fn new_local(installation_id: Uuid) -> Self {
+        Self {
+            user: RwLock::new(Some(User::local_installation(installation_id))),
+            anonymous_id: installation_id,
+            needs_reauth: AtomicBool::new(false),
+            credentials: RwLock::new(None),
+        }
+    }
+```
+
+Add this test helper near the existing `new_for_test` helpers:
+
+```rust
+    #[cfg(test)]
+    pub fn new_local_for_test(installation_id: Uuid) -> Self {
+        Self::new_local(installation_id)
+    }
+```
+
+Replace `AuthState::initialize` with this local-only implementation:
+
+```rust
+    /// Creates local-only auth state. The local fork does not load Warp account
+    /// credentials, API keys for Warp auth, Firebase tokens, `WARP_USER_SECRET`,
+    /// or persisted secure-storage users during startup.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub fn initialize(ctx: &AppContext, api_key: Option<String>) -> Self {
+        if api_key.is_some() {
+            log::info!(
+                "Ignoring Warp account API key during local-only startup; configure AI provider keys in AI settings"
+            );
+        }
+
+        Self::new_local(get_or_create_anonymous_id(ctx))
+    }
+```
+
+Replace `persist_action` with a local-user aware match. Keep existing remote credential arms for compile compatibility, but ensure local user + no credentials returns `DoNothing`:
+
+```rust
+    pub(super) fn persist_action(&self) -> PersistAction {
+        let user = self.user.read().clone();
+        let credentials = self.credentials.read().clone();
+
+        match (user, credentials) {
+            (Some(user), Some(Credentials::Firebase(firebase_tokens))) => {
+                let anonymous_user_type = user.anonymous_user_type();
+                let linked_at = user.linked_at();
+                let personal_object_limits = user.personal_object_limits();
+
+                #[allow(deprecated)]
+                let persisted = PersistedUser {
+                    auth_tokens: firebase_tokens,
+                    refresh_token: String::new(),
+                    local_id: user.local_id,
+                    metadata: user.metadata,
+                    is_onboarded: user.is_onboarded,
+                    needs_sso_link: user.needs_sso_link,
+                    anonymous_user_type,
+                    linked_at,
+                    personal_object_limits,
+                    is_on_work_domain: user.is_on_work_domain,
+                };
+                PersistAction::Persist(Box::new(persisted))
+            }
+            (Some(_), None) => PersistAction::DoNothing,
+            (None, None) => PersistAction::Remove,
+            (Some(_), Some(Credentials::ApiKey { .. })) => PersistAction::DoNothing,
+            (Some(_), Some(Credentials::Bearer(_))) => PersistAction::DoNothing,
+            (Some(_), Some(Credentials::SessionCookie)) => PersistAction::DoNothing,
+            #[cfg(any(test, feature = "integration_tests", feature = "skip_login"))]
+            (Some(_), Some(Credentials::Test)) => PersistAction::DoNothing,
+            (None, Some(_)) => PersistAction::DoNothing,
+        }
+    }
+```
+
+Replace `is_logged_in` with user-presence semantics for local startup:
+
+```rust
+    /// Determines whether the app has an identity ready for local UI flows.
+    /// In the local-only fork this is true for the local installation user even
+    /// though there are no remote Warp credentials.
+    pub fn is_logged_in(&self) -> bool {
+        self.user.read().is_some()
+    }
+```
+
+Keep `new_logged_out_for_test()` unchanged. Tests still need a way to exercise logged-out branches.
+
+- [ ] **Step 4: Remove now-unused imports if the compiler reports them**
+
+After replacing `initialize`, `Channel` and `ChannelState` may no longer be needed in `auth_state.rs`. If the compiler reports unused imports, remove this line:
+
+```rust
+use warp_core::channel::{Channel, ChannelState};
+```
+
+If `PersistedUser` is still used by `PersistAction` and `apply_persisted_user`, keep its import.
+
+- [ ] **Step 5: Run auth state tests**
+
+Run:
+
+```bash
+cargo test -p warp auth::auth_state::local_only_tests
+cargo test -p warp auth::auth_manager::auth_manager_test::test_persist_skips_when_api_key_authenticated
+```
+
+Expected: both commands PASS. The second command protects the existing `PersistAction::DoNothing` behavior for non-Firebase credentials.
+
+- [ ] **Step 6: Commit Task 2**
+
+Run:
+
+```bash
+git status --short
+git add app/src/auth/auth_state.rs
+git commit -m "$(cat <<'EOF'
+local-only: initialize auth state locally
+EOF
+)"
+```
+
+---
+
+### Task 3: Make AuthManager Account Operations Inert
+
+**Files:**
+- Modify: `app/src/auth/auth_manager.rs`
+- Modify: `app/src/auth/auth_manager_tests.rs`
+- Modify: `app/src/auth/login_slide.rs`
+- Modify: `app/src/auth/auth_view_modal.rs`
+
+- [ ] **Step 1: Replace auth-manager tests with local-only behavior tests**
+
+In `app/src/auth/auth_manager_tests.rs`, keep `initialize_app`, but replace the current redirect/logout/persistence tests with these tests:
+
+```rust
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use super::{AuthManager, AuthManagerEvent};
+use crate::auth::{auth_view_modal::AuthViewVariant, AuthStateProvider};
+use crate::ServerApiProvider;
+use warpui::{App, SingletonEntity};
+
+fn initialize_app(app: &mut App) {
+    app.add_singleton_model(|_ctx| ServerApiProvider::new_for_test());
+    app.add_singleton_model(|_| AuthStateProvider::new_for_test());
+    app.add_singleton_model(AuthManager::new_for_test);
+}
+
+#[test]
+fn refresh_user_does_not_fetch_remote_user() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+            auth_manager.refresh_user(ctx);
+        });
+    });
+}
+
+#[test]
+fn skip_remote_anonymous_user_creation_emits_skipped_login() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let saw_skipped_login = Arc::new(AtomicBool::new(false));
+        let saw_skipped_login_for_closure = saw_skipped_login.clone();
+
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&AuthManager::handle(ctx), move |_, event, _| {
+                if matches!(event, AuthManagerEvent::SkippedLogin) {
+                    saw_skipped_login_for_closure.store(true, Ordering::Relaxed);
+                }
+            });
+        });
+
+        AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+            auth_manager.skip_remote_anonymous_user_creation(ctx);
+        });
+
+        assert!(
+            saw_skipped_login.load(Ordering::Relaxed),
+            "local-only fork should emit SkippedLogin instead of creating a Firebase anonymous user"
+        );
+    });
+}
+
+#[test]
+fn login_gated_feature_does_not_emit_auth_prompt() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let saw_login_gate = Arc::new(AtomicBool::new(false));
+        let saw_login_gate_for_closure = saw_login_gate.clone();
+
+        app.update(|ctx| {
+            ctx.subscribe_to_model(&AuthManager::handle(ctx), move |_, event, _| {
+                if matches!(event, AuthManagerEvent::AttemptedLoginGatedFeature { .. }) {
+                    saw_login_gate_for_closure.store(true, Ordering::Relaxed);
+                }
+            });
+        });
+
+        AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+            auth_manager.attempt_login_gated_feature(
+                "local-only-test",
+                AuthViewVariant::RequireLoginCloseable,
+                ctx,
+            );
+        });
+
+        assert!(
+            !saw_login_gate.load(Ordering::Relaxed),
+            "local-only fork must not emit auth prompt events"
+        );
+    });
+}
+
+#[test]
+fn account_urls_are_local_only_about_blank() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        AuthManager::handle(&app).update(&mut app, |auth_manager, _ctx| {
+            assert_eq!(auth_manager.sign_up_url(), "about:blank#local-only-account-disabled");
+            assert_eq!(auth_manager.sign_in_url(), "about:blank#local-only-account-disabled");
+            assert_eq!(auth_manager.upgrade_url(), "about:blank#local-only-account-disabled");
+            assert_eq!(
+                auth_manager.login_options_url("unused-token"),
+                "about:blank#local-only-account-disabled"
+            );
+            assert_eq!(
+                auth_manager.link_sso_url("user@example.com"),
+                "about:blank#local-only-account-disabled"
+            );
+        });
+    });
+}
+
+#[test]
+fn set_user_onboarded_updates_local_state_only() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+            auth_manager.set_user_onboarded(ctx);
+        });
+
+        app.update(|ctx| {
+            assert_eq!(AuthStateProvider::as_ref(ctx).get().is_onboarded(), Some(true));
+        });
+    });
+}
+```
+
+This intentionally removes tests for browser redirects and remote secure-storage persistence from the local-only auth manager unit suite. Remote login redirect parsing can remain in `AuthRedirectPayload`; it is no longer a normal app path.
+
+- [ ] **Step 2: Run tests and verify they fail**
+
+Run:
+
+```bash
+cargo test -p warp auth::auth_manager::auth_manager_test
+```
+
+Expected: FAIL because current `AuthManager` still emits login-gated events and returns remote Warp URLs.
+
+- [ ] **Step 3: Add a local disabled URL constant**
+
+In `app/src/auth/auth_manager.rs`, add this near the existing `type URLConstructorCallback` alias:
+
+```rust
+const LOCAL_ONLY_ACCOUNT_DISABLED_URL: &str = "about:blank#local-only-account-disabled";
+```
+
+- [ ] **Step 4: Make remote refresh and device authorization inert**
+
+Replace `refresh_user` with:
+
+```rust
+    /// Local-only builds never refresh Warp account state from the server.
+    pub fn refresh_user(&self, _ctx: &mut ModelContext<Self>) {
+        log::info!("Skipping Warp account refresh in local-only build");
+    }
+```
+
+Replace `authorize_device` with:
+
+```rust
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub fn authorize_device(&self, ctx: &mut ModelContext<Self>) {
+        ctx.emit(AuthManagerEvent::AuthFailed(
+            UserAuthenticationError::Unexpected(anyhow!(
+                "Warp account device authorization is disabled in the local-only build"
+            )),
+        ));
+    }
+```
+
+Keep `on_device_code_received` in place if other code references it; after this change it is unreachable.
+
+- [ ] **Step 5: Make remote anonymous-user creation inert**
+
+Replace `create_anonymous_user` with a renamed local-only helper so later verification can forbid the original remote GraphQL entry-point name:
+
+```rust
+    pub fn skip_remote_anonymous_user_creation(&self, ctx: &mut ModelContext<Self>) {
+        log::info!("Skipping Firebase anonymous-user creation in local-only build");
+        ctx.emit(AuthManagerEvent::SkippedLogin);
+    }
+```
+
+Delete the entire `on_create_anonymous_user` callback in the same task. The block begins with:
+
+```rust
+    fn on_create_anonymous_user(
+        &mut self,
+        response: Result<CreateAnonymousUserResult>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+```
+
+and ends after this error branch:
+
+```rust
+            Err(err) => {
+                report_error!(
+                    anyhow!(err).context("Encountered an error trying to create anonymous users")
+                );
+                ctx.emit(AuthManagerEvent::CreateAnonymousUserFailed);
+            }
+        }
+    }
+```
+
+After the renamed helper no longer spawns the GraphQL request, no code should call that callback. In this same step, remove the now-unused `CreateAnonymousUserResult`, `AnonymousUserType`, and `AnonymousUserCreationError` imports if the compiler or editor reports them unused. Also remove `get_user_facing_error_message` if deleting the callback leaves it unused. Task 6 performs a second cleanup pass and verifies no anonymous-user creation symbols remain in `app/src/auth`.
+
+- [ ] **Step 6: Rewrite login-later UI handlers to skip remote anonymous-user creation**
+
+In `app/src/auth/login_slide.rs`, replace the body of `handle_login_later` with this local-only version. Keep the telemetry event and the final `LoginSlideEvent::LoginLaterConfirmed` emit, but remove the feature-flag branch and the call to `auth_manager.create_anonymous_user(None, ctx)`:
+
+```rust
+    fn handle_login_later(&mut self, ctx: &mut ViewContext<Self>) {
+        // Send synchronously since this is an important event in the sign up funnel and we
+        // don't want to lose events if the user quits before the event queue is flushed.
+        send_telemetry_sync_from_ctx!(
+            TelemetryEvent::LoginLaterConfirmationButtonClicked {
+                source: LoginEventSource::OnboardingSlide,
+            },
+            ctx
+        );
+        AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
+            auth_manager.skip_remote_anonymous_user_creation(ctx);
+        });
+        ctx.emit(LoginSlideEvent::LoginLaterConfirmed);
+    }
+```
+
+In `app/src/auth/auth_view_modal.rs`, replace `handle_login_later` with:
+
+```rust
+    pub fn handle_login_later(&mut self, ctx: &mut ViewContext<Self>) {
+        AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
+            auth_manager.skip_remote_anonymous_user_creation(ctx);
+        });
+    }
+```
+
+Remove `use warp_core::features::FeatureFlag;` from both files if it becomes unused.
+
+- [ ] **Step 7: Make login-gated and quota prompts no-op**
+
+Replace `attempt_login_gated_feature` with:
+
+```rust
+    pub fn attempt_login_gated_feature(
+        &self,
+        feature: LoginGatedFeature,
+        _auth_view_variant: AuthViewVariant,
+        _ctx: &mut ModelContext<Self>,
+    ) {
+        log::info!("Ignoring login-gated feature '{feature}' in local-only build");
+    }
+```
+
+Replace `anonymous_user_hit_drive_object_limit` with:
+
+```rust
+    pub fn anonymous_user_hit_drive_object_limit(&self, _ctx: &mut ModelContext<Self>) {
+        log::info!("Ignoring anonymous-user object limit in local-only build");
+    }
+```
+
+- [ ] **Step 8: Disable anonymous user linking and tokenized browser URLs**
+
+Replace `initiate_anonymous_user_linking` with:
+
+```rust
+    pub fn initiate_anonymous_user_linking(
+        &self,
+        _entrypoint: AnonymousUserSignupEntrypoint,
+        _ctx: &mut ModelContext<Self>,
+    ) {
+        log::info!("Ignoring anonymous-user linking in local-only build");
+    }
+```
+
+Replace `open_url_maybe_with_anonymous_token` with:
+
+```rust
+    pub fn open_url_maybe_with_anonymous_token(
+        &self,
+        ctx: &mut ModelContext<Self>,
+        construct_url: URLConstructorCallback,
+    ) {
+        let url = construct_url(None);
+        ctx.open_url(&url);
+    }
+```
+
+Replace `copy_anonymous_user_linking_url_to_clipboard` with:
+
+```rust
+    pub fn copy_anonymous_user_linking_url_to_clipboard(&self, _ctx: &mut ModelContext<Self>) {
+        log::info!("Ignoring anonymous-user linking URL copy in local-only build");
+    }
+```
+
+- [ ] **Step 9: Replace account URLs with local disabled URLs**
+
+Replace these methods in `app/src/auth/auth_manager.rs`:
+
+```rust
+    pub fn sign_up_url(&mut self) -> String {
+        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
+    }
+
+    pub fn sign_in_url(&mut self) -> String {
+        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
+    }
+
+    pub fn upgrade_url(&mut self) -> String {
+        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
+    }
+
+    pub fn login_options_url(&mut self, _custom_token: &str) -> String {
+        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
+    }
+
+    pub fn link_sso_url(&mut self, _email: &str) -> String {
+        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
+    }
+```
+
+Keep `generate_auth_state` and `consume_auth_state` until all tests and redirect helpers are rewritten; they may become dead code later.
+
+- [ ] **Step 10: Stop writing onboarded state to the server**
+
+Replace `set_user_onboarded` with:
+
+```rust
+    /// Marks the local installation user as onboarded without contacting Warp servers.
+    pub fn set_user_onboarded(&self, ctx: &mut ModelContext<Self>) {
+        self.auth_state.set_is_onboarded(true);
+        self.persist(ctx);
+    }
+```
+
+- [ ] **Step 11: Run auth manager tests**
+
+Run:
+
+```bash
+cargo test -p warp auth::auth_manager::auth_manager_test
+```
+
+Expected: PASS.
+
+- [ ] **Step 12: Commit Task 3**
+
+Run:
+
+```bash
+git status --short
+git add app/src/auth/auth_manager.rs app/src/auth/auth_manager_tests.rs app/src/auth/login_slide.rs app/src/auth/auth_view_modal.rs
+git commit -m "$(cat <<'EOF'
+local-only: disable remote account operations
+EOF
+)"
+```
+
+---
+
+### Task 4: Start Desktop Windows Without Login or Account Prompts
+
+**Files:**
+- Modify: `app/src/root_view.rs`
+
+- [ ] **Step 1: Add local-only helper functions in RootView**
+
+In `app/src/root_view.rs`, add these helper methods inside `impl RootView`, immediately before the existing `pub fn new` method:
+
+```rust
+    fn should_show_local_onboarding(ctx: &AppContext) -> bool {
+        FeatureFlag::OpenWarpNewSettingsModes.is_enabled()
+            && FeatureFlag::AgentOnboarding.is_enabled()
+            && !has_completed_local_onboarding(ctx)
+    }
+
+    fn local_only_account_disabled_url() -> String {
+        "about:blank#local-only-account-disabled".to_string()
+    }
+```
+
+- [ ] **Step 2: Force desktop startup into local terminal/onboarding state**
+
+In `RootView::new`, replace the existing `let auth_onboarding_state` block. It is the branch that currently chooses `Terminal`, `WebImport`, `Auth`, or `Onboarding` based on `auth_state.is_logged_in()`, `ForceLogin`, and `SkipFirebaseAnonymousUser`. Use this version:
+
+```rust
+        let auth_onboarding_state = {
+            cfg_if! {
+                if #[cfg(target_family = "wasm")] {
+                    if auth_state.is_logged_in() {
+                        AuthOnboardingState::Terminal(workspace_args.create_workspace(ctx))
+                    } else {
+                        AuthOnboardingState::WebImport(AuthOnboardingTarget::Workspace(workspace_args.into()))
+                    }
+                } else {
+                    if Self::should_show_local_onboarding(ctx) {
+                        let workspace_args_box: Box<WorkspaceArgs> = workspace_args.into();
+                        let onboarding_view = Self::create_agent_onboarding_view(ctx);
+                        onboarding_view.update(ctx, |view, ctx| {
+                            view.start_onboarding(ctx);
+                        });
+                        AuthOnboardingState::Onboarding {
+                            onboarding_view,
+                            target: AuthOnboardingTarget::Workspace(workspace_args_box),
+                        }
+                    } else {
+                        AuthOnboardingState::Terminal(workspace_args.create_workspace(ctx))
+                    }
+                }
+            }
+        };
+```
+
+This deliberately ignores `FeatureFlag::ForceLogin` and `FeatureFlag::SkipFirebaseAnonymousUser` for desktop local-only builds.
+
+- [ ] **Step 3: Remove post-onboarding login requirement**
+
+In `handle_agent_onboarding_event`, inside `AgentOnboardingEvent::OnboardingCompleted`, replace this block:
+
+```rust
+                let is_logged_in = AuthStateProvider::as_ref(ctx).get().is_logged_in();
+                // If the user isn't logged in, only require login if the applied
+                // settings need an account (AI or Warp Drive enabled).
+                let ai_enabled = selected_settings.is_ai_enabled();
+                let warp_drive_enabled = selected_settings.is_warp_drive_enabled();
+                // With old onboarding, we ask user to log in before onboarding, so don't do it after onboarding completes.
+                let requires_login = !is_logged_in
+                    && (ai_enabled || warp_drive_enabled)
+                    && FeatureFlag::OpenWarpNewSettingsModes.is_enabled();
+```
+
+with:
+
+```rust
+                let is_logged_in = AuthStateProvider::as_ref(ctx).get().is_logged_in();
+```
+
+Then delete the full login-slide branch in the same match arm. It begins with the exact line below and ends immediately before `apply_onboarding_settings(selected_settings, ctx);`:
+
+```rust
+                if requires_login {
+```
+
+The deleted block is the code that stores `pending_tutorial`, computes `theme_name`, creates `LoginSlideView`, stores `pending_post_auth_onboarding_settings`, sets `AuthOnboardingState::LoginSlide`, emits `AuthOnboardingStateChanged`, focuses, notifies, and returns. Local-only onboarding must always apply settings and continue to the workspace.
+
+- [ ] **Step 4: Disable onboarding upgrade and login browser actions**
+
+In `handle_agent_onboarding_event`, replace the two upgrade arms with local disabled URL behavior:
+
+```rust
+            AgentOnboardingEvent::UpgradeRequested => {
+                ctx.open_url(&Self::local_only_account_disabled_url());
+            }
+            AgentOnboardingEvent::UpgradeCopyUrlRequested => {
+                let disabled_url = Self::local_only_account_disabled_url();
+                ctx.clipboard().write(ClipboardContent {
+                    plain_text: disabled_url.clone(),
+                    paths: Some(vec![disabled_url]),
+                    ..Default::default()
+                });
+            }
+```
+
+Replace `AgentOnboardingEvent::LoginFromWelcomeRequested` with a local transition back to the workspace target instead of opening sign-in and showing a login slide:
+
+```rust
+            AgentOnboardingEvent::LoginFromWelcomeRequested => {
+                let AuthOnboardingState::Onboarding { target, .. } = &self.auth_onboarding_state
+                else {
+                    return;
+                };
+                let workspace = target.clone().to_workspace(ctx);
+                self.auth_onboarding_state = AuthOnboardingState::Terminal(workspace);
+                ctx.emit(RootViewEvent::AuthOnboardingStateChanged);
+                self.start_autoupdate_polling(ctx);
+                self.focus(ctx);
+                ctx.notify();
+            }
+```
+
+Replace `AgentOnboardingEvent::PrivacySettingsFromTerminalThemeSlideRequested` with no login slide. Open the local privacy/settings handling directly by applying current local terminal path behavior:
+
+```rust
+            AgentOnboardingEvent::PrivacySettingsFromTerminalThemeSlideRequested => {
+                log::info!("Privacy-settings login slide is disabled in local-only build");
+            }
+```
+
+- [ ] **Step 5: Stop onboarding foreground refreshes that fetch server metadata**
+
+In `create_agent_onboarding_view`, in the `AuthManagerEvent::AuthComplete` branch, remove this server metadata refresh block:
+
+```rust
+                        if matches!(event, AuthManagerEvent::AuthComplete) {
+                            LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+                                prefs.refresh_available_models(ctx);
+                            });
+                            TeamUpdateManager::handle(ctx).update(ctx, |manager, ctx| {
+                                drop(manager.refresh_workspace_metadata(ctx));
+                            });
+                        }
+```
+
+Replace it with:
+
+```rust
+                        if matches!(event, AuthManagerEvent::AuthComplete) {
+                            log::info!("Ignoring remote onboarding refresh in local-only build");
+                        }
+```
+
+In the `AgentOnboardingEvent::AppBecameActive` arm, replace the model/team refresh calls with:
+
+```rust
+            AgentOnboardingEvent::AppBecameActive => {
+                log::info!("Ignoring remote onboarding active refresh in local-only build");
+            }
+```
+
+- [ ] **Step 6: Run a targeted compile check**
+
+Run:
+
+```bash
+cargo check -p warp --bin warp-oss
+```
+
+Expected: PASS, or only unrelated pre-existing dependency/network issues. If it fails with unused imports in `root_view.rs`, remove imports that were only needed by deleted login-slide branches, such as `LoginSlideSource` or `TabSettings`, when they are no longer referenced.
+
+- [ ] **Step 7: Commit Task 4**
+
+Run:
+
+```bash
+git status --short
+git add app/src/root_view.rs
+git commit -m "$(cat <<'EOF'
+local-only: start desktop without account prompts
+EOF
+)"
+```
+
+---
+
+### Task 5: Remove Remote Anonymous User and Logout Entry Points
+
+**Files:**
+- Modify: `app/src/workspace/global_actions.rs`
+- Modify: `app/src/app_menus.rs`
+- Modify: `app/src/auth/mod.rs`
+
+- [ ] **Step 1: Remove the anonymous-user debug action**
+
+In `app/src/workspace/global_actions.rs`, remove this import:
+
+```rust
+use warp_graphql::mutations::create_anonymous_user::AnonymousUserType;
+```
+
+Remove this registration from `init_global_actions`:
+
+```rust
+    app.add_global_action(
+        "workspace:debug_create_anonymous_user",
+        create_anonymous_user,
+    );
+```
+
+Delete the entire `create_anonymous_user` function:
+
+```rust
+fn create_anonymous_user(_: &(), ctx: &mut AppContext) {
+    log::info!("Creating anonymous user");
+    let anonymous_user_type = AnonymousUserType::NativeClientAnonymousUser;
+    let server_api = ServerApiProvider::handle(ctx).read(ctx, |provider, _ctx| provider.get());
+    let result =
+        warpui::r#async::block_on(server_api.create_anonymous_user(None, anonymous_user_type));
+    match result {
+        Ok(user) => log::info!("Successfully created anonymous user {user:?}"),
+        Err(err) => log::error!("Failed to create anonymous user: {err:?}"),
+    }
+}
+```
+
+If `ServerApiProvider` is then unused in this file, remove it from the grouped import:
+
+```rust
+use crate::{app_state::get_app_state, server::server_api::ServerApiProvider};
+```
+
+so it becomes:
+
+```rust
+use crate::app_state::get_app_state;
+```
+
+- [ ] **Step 2: Make logout global actions local-only no-ops**
+
+In `app/src/workspace/global_actions.rs`, replace these functions:
+
+```rust
+fn trigger_maybe_log_out(_: &(), ctx: &mut AppContext) {
+    auth::maybe_log_out(ctx)
+}
+
+fn trigger_log_out(_: &(), ctx: &mut AppContext) {
+    auth::log_out(ctx)
+}
+```
+
+with:
+
+```rust
+fn trigger_maybe_log_out(_: &(), _ctx: &mut AppContext) {
+    log::info!("Ignoring logout action in local-only build");
+}
+
+fn trigger_log_out(_: &(), _ctx: &mut AppContext) {
+    log::info!("Ignoring logout action in local-only build");
+}
+```
+
+If `use crate::auth;` is then unused, remove it.
+
+- [ ] **Step 3: Remove the visible app-menu Log out item**
+
+In `app/src/app_menus.rs`, remove `AuthStateProvider` from this import:
+
+```rust
+use crate::auth::AuthStateProvider;
+```
+
+If the file has this grouped import:
+
+```rust
+use crate::{auth, report_if_error};
+```
+
+change it to:
+
+```rust
+use crate::report_if_error;
+```
+
+In `make_new_app_menu`, delete the visible app-account logout menu item. The block starts with:
+
+```rust
+    menu_items.push(MenuItem::Custom(CustomMenuItem::new(
+        "Log out",
+        auth::maybe_log_out,
+```
+
+and ends at the matching `)));`.
+
+Keep all non-account app menu items such as Preferences, Hide, Set Warp as Default Terminal, and Quit.
+
+- [ ] **Step 4: Make auth module logout helpers harmless**
+
+In `app/src/auth/mod.rs`, replace `maybe_log_out` with:
+
+```rust
+/// Logout is disabled in the local-only fork because there is no Warp account session.
+pub fn maybe_log_out(_app: &mut AppContext) {
+    log::info!("Ignoring logout request in local-only build");
+}
+```
+
+Replace `log_out` with:
+
+```rust
+/// Logout is disabled in the local-only fork because there is no Warp account session.
+pub fn log_out(_app: &mut AppContext) {
+    log::info!("Ignoring logout request in local-only build");
+}
+```
+
+Do not delete imports in this file until after compiling; many imports near the top were only used by the old logout implementation and should be removed if the compiler reports them unused.
+
+- [ ] **Step 5: Run targeted search checks**
+
+Run:
+
+```bash
+rg -n "workspace:debug_create_anonymous_user|debug_create_anonymous_user|Creating anonymous user|Log out\"|auth::maybe_log_out" app/src/workspace app/src/app_menus.rs app/src/auth/mod.rs
+```
+
+Expected: no matches for `workspace:debug_create_anonymous_user`, `debug_create_anonymous_user`, `Creating anonymous user`, or `auth::maybe_log_out`. If `Log out` remains only in non-Warp-account MCP server OAuth UI, leave it for the AI/MCP settings plan.
+
+- [ ] **Step 6: Run a targeted compile check**
+
+Run:
+
+```bash
+cargo check -p warp --bin warp-oss
+```
+
+Expected: PASS after removing unused imports. If the build reports unused imports in `auth/mod.rs`, remove the imports that are now only used by the deleted logout logic:
+
+```rust
+use crate::ai::agent_conversations_model::AgentConversationsModel;
+use crate::ai::blocklist::agent_view::orchestration_pill_bar_model::OrchestrationPillBarModel;
+use crate::ai::blocklist::BlocklistAIHistoryModel;
+use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
+use crate::ai_assistant::requests::REQUEST_LIMIT_INFO_CACHE_KEY;
+use crate::code::editor_management::{CodeEditorStatus, CodeEditorSummary};
+use crate::env_vars::manager::EnvVarCollectionManager;
+use crate::notebooks::manager::NotebookManager;
+use crate::terminal::general_settings::GeneralSettings;
+use crate::workflows::manager::WorkflowManager;
+use ::settings::{Setting, SettingsManager, ToggleableSetting};
+use ai::index::full_source_code_embedding::manager::CodebaseIndexManager;
+use itertools::Itertools;
+use warpui::modals::{AlertDialogWithCallbacks, ModalButton};
+use warp_core::user_preferences::GetUserPreferences as _;
+use crate::cloud_object::model::persistence::CloudModel;
+use crate::focus_running_window_and_show_native_modal;
+use crate::palette::PaletteMode;
+use crate::server::cloud_objects::update_manager::UpdateManager;
+use crate::server::sync_queue::SyncQueue;
+use crate::server::telemetry::{PaletteSource, TelemetryEvent};
+use crate::session_management::{RunningSessionSummary, SessionNavigationData};
+use crate::settings::{
+    CloudPreferencesSettings, PrivacySettings, CRASH_REPORTING_ENABLED_DEFAULTS_KEY,
+    TELEMETRY_ENABLED_DEFAULTS_KEY,
+};
+use crate::terminal::shared_session::manager::Manager as SharedSessionManager;
+use crate::workspace::{Workspace, WorkspaceAction};
+use crate::workspaces::update_manager::TeamUpdateManager;
+use crate::{persistence, GlobalResourceHandlesProvider};
+use crate::{report_if_error, send_telemetry_sync_from_app_ctx};
+```
+
+Keep imports still used by other auth module functions.
+
+- [ ] **Step 7: Commit Task 5**
+
+Run:
+
+```bash
+git status --short
+git add app/src/workspace/global_actions.rs app/src/app_menus.rs app/src/auth/mod.rs
+git commit -m "$(cat <<'EOF'
+local-only: remove account logout entry points
+EOF
+)"
+```
+
+---
+
+### Task 6: Prune Direct Remote Anonymous-User Imports From Auth User Types
+
+**Files:**
+- Modify: `app/src/auth/user.rs`
+- Modify: `app/src/auth/auth_manager.rs`
+- Modify: `app/src/server/server_api/auth.rs`
+- Test: `app/src/auth/user_tests.rs`
+
+- [ ] **Step 1: Add a server-local anonymous-user conversion helper**
+
+Before deleting the GraphQL anonymous-user conversion from `app/src/auth/user.rs`, preserve compile compatibility for the still-present server auth parser. In `app/src/server/server_api/auth.rs`, add this helper near `impl From<GqlUserOutput> for UserProperties`:
+
+```rust
+fn convert_gql_anonymous_user_type(
+    anonymous_user_type: warp_graphql::mutations::create_anonymous_user::AnonymousUserType,
+) -> Option<crate::auth::user::AnonymousUserType> {
+    match anonymous_user_type {
+        warp_graphql::mutations::create_anonymous_user::AnonymousUserType::NativeClientAnonymousUser => {
+            Some(crate::auth::user::AnonymousUserType::NativeClientAnonymousUser)
+        }
+        warp_graphql::mutations::create_anonymous_user::AnonymousUserType::NativeClientAnonymousUserFeatureGated => {
+            Some(crate::auth::user::AnonymousUserType::NativeClientAnonymousUserFeatureGated)
+        }
+        warp_graphql::mutations::create_anonymous_user::AnonymousUserType::WebClientAnonymousUser => {
+            Some(crate::auth::user::AnonymousUserType::WebClientAnonymousUser)
+        }
+        warp_graphql::mutations::create_anonymous_user::AnonymousUserType::Other(_) => None,
+    }
+}
+```
+
+Then replace this field assignment in the `User` construction inside `impl From<GqlUserOutput> for UserProperties`:
+
+```rust
+            anonymous_user_type: anonymous_user_type.and_then(|t| t.try_into().ok()),
+```
+
+with:
+
+```rust
+            anonymous_user_type: anonymous_user_type.and_then(convert_gql_anonymous_user_type),
+```
+
+This keeps server/cloud auth code compiling until a later plan prunes `app/src/server/server_api/auth.rs` entirely.
+
+- [ ] **Step 2: Remove GraphQL anonymous-user conversion from `user.rs`**
+
+In `app/src/auth/user.rs`, delete this entire impl block:
+
+```rust
+impl TryFrom<warp_graphql::mutations::create_anonymous_user::AnonymousUserType>
+    for AnonymousUserType
+{
+    type Error = anyhow::Error;
+    fn try_from(
+        value: warp_graphql::mutations::create_anonymous_user::AnonymousUserType,
+    ) -> Result<Self, Self::Error> {
+        match value {
+            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::NativeClientAnonymousUser => Ok(AnonymousUserType::NativeClientAnonymousUser),
+            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::NativeClientAnonymousUserFeatureGated => Ok(AnonymousUserType::NativeClientAnonymousUserFeatureGated),
+            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::WebClientAnonymousUser => Ok(AnonymousUserType::WebClientAnonymousUser),
+            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::Other(_) => {
+                Err(anyhow!("could not convert unknown anonymous user type"))
+            },
+        }
+    }
+}
+```
+
+If `anyhow` or `Result` becomes unused at the top of `user.rs`, keep `anyhow` and `Result` if `PersonalObjectLimits::try_from` and `FirebaseAuthTokens::from_response` still use them, and remove only unused import names. The top import can remain:
+
+```rust
+use anyhow::{anyhow, Result};
+```
+
+- [ ] **Step 3: Verify GraphQL anonymous-user imports are gone from `auth_manager.rs`**
+
+In `app/src/auth/auth_manager.rs`, confirm Task 3 removed this import:
+
+```rust
+use warp_graphql::mutations::create_anonymous_user::{
+    AnonymousUserType, CreateAnonymousUserResult,
+};
+```
+
+Confirm Task 3 deleted the `on_create_anonymous_user` callback entirely.
+
+Confirm `AnonymousUserCreationError` was removed from this import list:
+
+```rust
+use crate::server::server_api::auth::{
+    AnonymousUserCreationError, AuthClient, MintCustomTokenError, UserAuthenticationError,
+};
+```
+
+so it is now:
+
+```rust
+use crate::server::server_api::auth::{AuthClient, MintCustomTokenError, UserAuthenticationError};
+```
+
+If any of these symbols remain, remove them now. Keep `FetchUserResult` and remote refresh-related imports if `on_user_fetched`, `fetch_new_custom_token`, or other unreachable-but-still-compiled server helpers still reference them. This task only removes names that become unused because anonymous-user creation was removed.
+
+- [ ] **Step 4: Run a targeted forbidden import search**
+
+Run:
+
+```bash
+rg -n "create_anonymous_user|CreateAnonymousUserResult|AnonymousUserCreationError" app/src/auth app/src/workspace/global_actions.rs
+```
+
+Expected: no matches in `app/src/auth` or `app/src/workspace/global_actions.rs`. If matches remain in `app/src/server/server_api/auth.rs`, leave them for the later server/cloud dependency pruning plan.
+
+- [ ] **Step 5: Run targeted tests**
+
+Run:
+
+```bash
+cargo test -p warp auth::user::tests
+cargo test -p warp auth::auth_manager::auth_manager_test
+```
+
+Expected: both commands PASS.
+
+- [ ] **Step 6: Commit Task 6**
+
+Run:
+
+```bash
+git status --short
+git add app/src/auth/user.rs app/src/auth/auth_manager.rs app/src/server/server_api/auth.rs
+git commit -m "$(cat <<'EOF'
+local-only: prune anonymous account imports
+EOF
+)"
+```
+
+---
+
+### Task 7: Stop Startup Auth Refresh and Logged-Out Account Reporting
+
+**Files:**
+- Modify: `app/src/lib.rs`
+
+- [ ] **Step 1: Replace startup auth branch with local-only behavior while preserving crash recovery**
+
+In `app/src/lib.rs`, find the block after app models are initialized that starts with:
+
+```rust
+        let user_is_logged_in = auth_state.is_logged_in();
+```
+
+In the `if user_is_logged_in` branch, delete the startup account refresh call:
+
+```rust
+                AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
+                    auth_manager.refresh_user(ctx);
+                });
+```
+
+Also delete the startup telemetry closure that begins with `ctx.on_first_frame_drawn(move |ctx| {` and ends at its matching `});`, including its `send_telemetry_from_app_ctx!(event, ctx);` call. Delete the entire `else` branch that sends:
+
+```rust
+            send_telemetry_sync_from_app_ctx!(TelemetryEvent::LoggedOutStartup, ctx);
+            download_method::determine_and_report(
+                auth_state.clone(),
+                ctx.background_executor().clone(),
+            );
+```
+
+Move the existing crash-recovery frame callback out of the old logged-in-only branch so local-only builds keep crash recovery behavior. The replacement for the whole branch should be:
+
+```rust
+        let user_is_logged_in = auth_state.is_logged_in();
+
+        if user_is_logged_in {
+            log::info!("Local-only identity initialized; skipping Warp account refresh");
+        } else {
+            log::info!("No local identity found; continuing without Warp account reporting");
+        }
+
+        #[cfg(enable_crash_recovery)]
+        ctx.on_frame_drawn(|ctx, window_id| {
+            crash_recovery::CrashRecovery::handle(ctx).update(ctx, |crash_recovery, ctx| {
+                crash_recovery.on_frame_drawn(window_id, ctx);
+            });
+        });
+```
+
+This removes startup `AuthManager::refresh_user`, `LoggedOutStartup` telemetry, download-method reporting, and first-frame account telemetry from the local-only path while preserving the existing crash recovery `on_frame_drawn` callback.
+
+- [ ] **Step 2: Remove unused imports**
+
+If the compiler reports unused imports from deleted startup telemetry/reporting code, remove only the imports that are no longer referenced elsewhere in `lib.rs`. Likely candidates include:
+
+```rust
+use auth::auth_manager::AuthManager;
+use crate::server::telemetry::context_provider::AppTelemetryContextProvider;
+```
+
+Do not remove `AuthStateProvider` or `AuthState` if they are still used during app model initialization.
+
+- [ ] **Step 3: Run a targeted search check**
+
+Run:
+
+```bash
+rg -n "refresh_user\(ctx\)|LoggedOutStartup|determine_and_report|record_identify_user_event|record_event\(" app/src/lib.rs
+```
+
+Expected: no startup auth-refresh or logged-out reporting matches in `app/src/lib.rs`. If `record_event` appears in unrelated helper code, inspect it and leave it if unrelated to startup auth.
+
+- [ ] **Step 4: Run a compile check**
+
+Run:
+
+```bash
+cargo check -p warp --bin warp-oss
+```
+
+Expected: PASS after removing unused imports.
+
+- [ ] **Step 5: Commit Task 7**
+
+Run:
+
+```bash
+git status --short
+git add app/src/lib.rs
+git commit -m "$(cat <<'EOF'
+local-only: skip startup account refresh
+EOF
+)"
+```
+
+---
+
+### Task 8: Add Auth/Account Local-only Verification Guards
+
+**Files:**
+- Modify: `script/local-only/verify`
+
+- [ ] **Step 1: Add auth/account targeted regex variables**
+
+In `script/local-only/verify`, after the existing `SCAN_TARGETS` array declaration, add:
+
+```bash
+AUTH_ACCOUNT_TARGETS=("app/src/auth" "app/src/root_view.rs" "app/src/workspace/global_actions.rs" "app/src/app_menus.rs" "app/src/lib.rs")
+AUTH_ACCOUNT_FORBIDDEN_REGEX='(createAnonymousUser|create_anonymous_user|debug_create_anonymous_user|workspace:debug_create_anonymous_user|Authenticating via API key|WARP_USER_SECRET|PersistedUser::from_secure_storage|/signup/remote|/login/remote|/upgrade\?|/login_options/|/link_sso|UserInitiatedLogOut|LogOutModalShown|LoggedOutStartup|determine_and_report)'
+```
+
+- [ ] **Step 2: Add a targeted scan function**
+
+After `scan_required_ai_config()`, add:
+
+```bash
+scan_auth_account_forbidden() {
+  local scan_root="$1"
+  shift
+  local -a targets=("$@")
+  local -a existing_targets=()
+
+  for target in "${targets[@]}"; do
+    if [[ -e "$scan_root/$target" ]]; then
+      existing_targets+=("$scan_root/$target")
+    fi
+  done
+
+  if [[ "${#existing_targets[@]}" -eq 0 ]]; then
+    echo "No auth/account scan targets exist under $scan_root"
+    return 0
+  fi
+
+  local rg_status
+  rg_status=0
+  rg -n --hidden --glob '!target/**' --glob '!.git/**' "$AUTH_ACCOUNT_FORBIDDEN_REGEX" "${existing_targets[@]}" || rg_status="$?"
+
+  case "$rg_status" in
+    0)
+      return 1
+      ;;
+    1)
+      return 0
+      ;;
+    *)
+      local_only_die "ripgrep auth/account scan failed with status $rg_status"
+      ;;
+  esac
+}
+```
+
+- [ ] **Step 3: Extend verifier self-test**
+
+Inside `run_self_test()`, after the existing forbidden-scan fail fixture check and before the AI config check, add:
+
+```bash
+  if ! scan_auth_account_forbidden "$tmp" "app/src"; then
+    local_only_die "self-test auth/account scan reported clean fixture as forbidden"
+  fi
+
+  cat > "$tmp/app/src/auth_prompt.rs" <<'AUTH_FAIL_FIXTURE'
+pub const SIGNUP_URL: &str = "/signup/remote";
+AUTH_FAIL_FIXTURE
+
+  if scan_auth_account_forbidden "$tmp" "app/src"; then
+    local_only_die "self-test auth/account fail fixture was not reported as forbidden"
+  fi
+```
+
+- [ ] **Step 4: Run self-test and verify it passes**
+
+Run:
+
+```bash
+bash -n script/local-only/verify
+script/local-only/verify --self-test
+```
+
+Expected: both commands PASS.
+
+- [ ] **Step 5: Wire targeted auth/account scan into normal static verification**
+
+In the `if [[ "$RUN_STATIC" == true ]]; then` block, after the existing forbidden cloud/account scan and before the AI configuration surface check, add:
+
+```bash
+  local_only_print_header "Scanning local-only auth/account entry points"
+  if ! scan_auth_account_forbidden "$ROOT" "${AUTH_ACCOUNT_TARGETS[@]}"; then
+    local_only_die "forbidden auth/account entry points remain"
+  fi
+```
+
+- [ ] **Step 6: Run targeted verification**
+
+Run:
+
+```bash
+script/local-only/verify --self-test
+script/local-only/verify --static-only
+```
+
+Expected:
+
+- `--self-test` PASS.
+- `--static-only` may still fail on the older broad `FORBIDDEN_REGEX` because server, billing, telemetry, cloud, and GraphQL modules still exist. It must not fail on the new targeted auth/account scan once Tasks 1-7 are complete. If it fails on the targeted scan, remove or rewrite the matched account/auth entry point before continuing.
+
+- [ ] **Step 7: Commit Task 8**
+
+Run:
+
+```bash
+git status --short
+git add script/local-only/verify
+git commit -m "$(cat <<'EOF'
+local-only: guard auth account entry points
+EOF
+)"
+```
+
+---
+
+### Task 9: Final Compile, Patch Export, and Review Handoff
+
+**Files:**
+- Modify: `patches/local-only/series`
+- Create/Modify: `patches/local-only/*.patch`
+
+- [ ] **Step 1: Run final targeted verification**
+
+Run:
+
+```bash
+cargo test -p warp auth::user::tests
+cargo test -p warp auth::auth_state::local_only_tests
+cargo test -p warp auth::auth_manager::auth_manager_test
+script/local-only/verify --self-test
+cargo check -p warp --bin warp-oss
+```
+
+Expected: all commands PASS, unless cargo needs network and fails before compiling due to dependency fetching. If cargo fails due to dependency fetching only, record the exact dependency/network failure in the final handoff and rerun after dependencies are available.
+
+- [ ] **Step 2: Confirm auth/account targeted search is clean**
+
+Run:
+
+```bash
+rg -n "createAnonymousUser|create_anonymous_user|debug_create_anonymous_user|workspace:debug_create_anonymous_user|Authenticating via API key|WARP_USER_SECRET|PersistedUser::from_secure_storage|/signup/remote|/login/remote|/upgrade\?|/login_options/|/link_sso|UserInitiatedLogOut|LogOutModalShown|LoggedOutStartup|determine_and_report" app/src/auth app/src/root_view.rs app/src/workspace/global_actions.rs app/src/app_menus.rs app/src/lib.rs
+```
+
+Expected: no matches.
+
+- [ ] **Step 3: Export updated local-only patch stack**
+
+Run:
+
+```bash
+script/local-only/export-patches origin/master
+```
+
+Expected: patch files under `patches/local-only/` are regenerated and `patches/local-only/series` includes the foundation patches plus the new auth/account removal commits.
+
+- [ ] **Step 4: Inspect patch export status**
+
+Run:
+
+```bash
+git status --short patches/local-only
+```
+
+Expected: updated patch files and `series` only.
+
+- [ ] **Step 5: Commit patch export**
+
+Run:
+
+```bash
+git add patches/local-only/series patches/local-only/*.patch
+git commit -m "$(cat <<'EOF'
+local-only: export auth account patch stack
+EOF
+)"
+```
+
+- [ ] **Step 6: Request final code review**
+
+Dispatch a code-review subagent with this context:
+
+```text
+Review the local-only auth/account removal implementation on branch make-warp-free.
+
+Requirements:
+- Desktop startup must not show sign-in, sign-up, account, team, or login-later prompts.
+- AuthState must initialize to a local installation identity without Warp API key, Firebase, WARP_USER_SECRET, or secure-storage credentials.
+- AuthManager must not refresh Warp users, create Firebase anonymous users, open Warp login/signup/upgrade/link URLs, or emit login-gated prompt events.
+- Visible app menu logout and hidden debug anonymous-user global action must be removed or inert.
+- Startup must not send logged-out account telemetry or report download method.
+- The implementation should keep local terminal startup compiling.
+
+Verify against changes from origin/master to HEAD. Report Critical/Important/Minor issues.
+```
+
+- [ ] **Step 7: Fix review findings or record clean handoff**
+
+If the reviewer reports Critical or Important issues, fix them before continuing. If the reviewer approves or reports only Minor follow-up items, record the final status with:
+
+```bash
+git status --short
+git log --oneline --decorate -12
+```
+
+Expected: clean working tree after all commits.
