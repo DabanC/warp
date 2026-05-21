@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+# shellcheck source=script/local-only/lib.sh
+source "$ROOT/script/local-only/lib.sh"
+
+usage() {
+  cat <<'USAGE'
+Usage: script/local-only/apply-patches [PATCH_DIR]
+
+Applies patches listed in PATCH_DIR/series using git am. PATCH_DIR defaults to
+patches/local-only.
+USAGE
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+local_only_require_cmd git
+local_only_require_clean_worktree
+
+PATCH_DIR="${1:-$(local_only_patch_dir)}"
+if [[ "$PATCH_DIR" != /* ]]; then
+  PATCH_DIR="$ROOT/$PATCH_DIR"
+fi
+SERIES_FILE="$(local_only_series_file "$PATCH_DIR")"
+
+[[ -d "$PATCH_DIR" ]] || local_only_die "patch directory does not exist: $PATCH_DIR"
+[[ -f "$SERIES_FILE" ]] || local_only_die "series file does not exist: $SERIES_FILE"
+
+local_only_print_header "Applying local-only patches"
+echo "Patch dir: $PATCH_DIR"
+
+if [[ ! -s "$SERIES_FILE" ]]; then
+  echo "Series file is empty; no patches to apply."
+  exit 0
+fi
+
+while IFS= read -r patch_name; do
+  [[ -z "$patch_name" ]] && continue
+  [[ "$patch_name" == \#* ]] && continue
+  patch_path="$PATCH_DIR/$patch_name"
+  [[ -f "$patch_path" ]] || local_only_die "patch listed in series does not exist: $patch_path"
+  echo "Applying $patch_name"
+  git am "$patch_path"
+done < "$SERIES_FILE"
+
+echo "All local-only patches applied."
