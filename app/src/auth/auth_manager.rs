@@ -7,12 +7,8 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use settings::Setting as _;
 use uuid::Uuid;
-use warp_core::channel::ChannelState;
 use warp_core::features::FeatureFlag;
-use warp_graphql::mutations::create_anonymous_user::{
-    AnonymousUserType, CreateAnonymousUserResult,
-};
-use warpui::{clipboard::ClipboardContent, Entity, ModelContext, SingletonEntity, UpdateModel};
+use warpui::{Entity, ModelContext, SingletonEntity, UpdateModel};
 
 use super::auth_state::{AuthState, PersistAction};
 use super::auth_view_modal::{AuthRedirectPayload, AuthViewVariant};
@@ -29,11 +25,8 @@ use crate::server::cloud_objects::update_manager::UpdateManager;
 use crate::server::server_api::auth::FetchUserResult;
 use crate::server::server_api::ServerApiProvider;
 use crate::server::{
-    graphql::get_user_facing_error_message,
     server_api::{
-        auth::{
-            AnonymousUserCreationError, AuthClient, MintCustomTokenError, UserAuthenticationError,
-        },
+        auth::{AuthClient, MintCustomTokenError, UserAuthenticationError},
         ServerApi,
     },
     telemetry::AnonymousUserSignupEntrypoint,
@@ -43,15 +36,11 @@ use crate::settings::initializer::SettingsInitializer;
 use crate::settings::PrivacySettings;
 use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::shared_session::manager::Manager as SharedSessionManager;
-#[cfg(target_family = "wasm")]
-use crate::uri::browser_url_handler::{parse_current_url, update_browser_url};
 use crate::workspaces::team_tester::TeamTesterStatus;
 use crate::{
-    persistence, report_error, report_if_error, send_telemetry_from_ctx,
-    send_telemetry_sync_from_ctx, GlobalResourceHandlesProvider, TelemetryEvent,
+    persistence, report_if_error, send_telemetry_from_ctx, GlobalResourceHandlesProvider,
+    TelemetryEvent,
 };
-#[cfg(target_family = "wasm")]
-use url::Url;
 use user_persistence::PersistedUser;
 
 #[derive(Debug)]
@@ -91,6 +80,8 @@ pub enum AuthManagerEvent {
 pub type LoginGatedFeature = &'static str;
 
 type URLConstructorCallback = Box<dyn FnOnce(Option<&str>) -> String>;
+
+const LOCAL_ONLY_ACCOUNT_DISABLED_URL: &str = "about:blank#local-only-account-disabled";
 
 /// AuthManager is a singleton model which manages the currently logged-in user's state.
 /// If you need to access the state, use `AuthStateProvider`.
@@ -246,23 +237,9 @@ impl AuthManager {
         );
     }
 
-    /// Refreshes the user's auth state using their existing credentials.
-    pub fn refresh_user(&self, ctx: &mut ModelContext<Self>) {
-        let Some(credentials) = self.auth_state.credentials() else {
-            log::warn!("Attempted to refresh user without credentials");
-            return;
-        };
-
-        let Some(token) = credentials.login_token() else {
-            log::info!("Attempted to refresh a user with no login token, skipping");
-            return;
-        };
-
-        let auth_client = self.auth_client.clone();
-        let _ = ctx.spawn(
-            async move { auth_client.fetch_user(token, true).await },
-            Self::on_user_fetched,
-        );
+    /// Local-only builds never refresh Warp account state from the server.
+    pub fn refresh_user(&self, _ctx: &mut ModelContext<Self>) {
+        log::info!("Skipping Warp account refresh in local-only build");
     }
 
     /// Authenticate asynchronously using the OAuth2 device authorization flow.
@@ -270,16 +247,11 @@ impl AuthManager {
     /// This is only used by the Warp CLI if running on a device that does not have the Warp app installed.
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub fn authorize_device(&self, ctx: &mut ModelContext<Self>) {
-        // Clear any stale user state so old credentials don't interfere
-        // with the fresh device auth flow.
-        self.auth_state.set_credentials(None);
-
-        let auth_client = self.auth_client.clone();
-        // Request a device code the user can enter in their browser.
-        ctx.spawn(
-            async move { auth_client.request_device_code().await },
-            Self::on_device_code_received,
-        );
+        ctx.emit(AuthManagerEvent::AuthFailed(
+            UserAuthenticationError::Unexpected(anyhow!(
+                "Warp account device authorization is disabled in the local-only build"
+            )),
+        ));
     }
 
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -570,137 +542,30 @@ impl AuthManager {
         }
     }
 
-    pub fn create_anonymous_user(
-        &self,
-        referral_code: Option<String>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let anonymous_user_type = AnonymousUserType::NativeClientAnonymousUserFeatureGated;
-
-        let auth_client = self.auth_client.clone();
-        let _ = ctx.spawn(
-            async move {
-                auth_client
-                    .create_anonymous_user(referral_code, anonymous_user_type)
-                    .await
-            },
-            Self::on_create_anonymous_user,
-        );
-    }
-
-    fn on_create_anonymous_user(
-        &mut self,
-        response: Result<CreateAnonymousUserResult>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let custom_token = match response {
-            Ok(response_data) => match response_data {
-                CreateAnonymousUserResult::CreateAnonymousUserOutput(output) => Ok(output.id_token),
-                CreateAnonymousUserResult::UserFacingError(user_facing_error) => {
-                    Err(AnonymousUserCreationError::UserFacingError(
-                        get_user_facing_error_message(user_facing_error),
-                    ))
-                }
-                CreateAnonymousUserResult::Unknown => Err(AnonymousUserCreationError::Unknown),
-            },
-            Err(_) => Err(AnonymousUserCreationError::CreationFailed),
-        };
-
-        match custom_token {
-            Ok(custom_token) => {
-                // Exchange the custom token for an ID token.
-                let auth_client = self.auth_client.clone();
-                let _ = ctx.spawn(
-                    async move {
-                        auth_client
-                            .fetch_user(
-                                LoginToken::Firebase(FirebaseToken::Custom(custom_token)),
-                                false, /* for_refresh */
-                            )
-                            .await
-                    },
-                    Self::on_user_fetched,
-                );
-            }
-
-            Err(err) => {
-                report_error!(
-                    anyhow!(err).context("Encountered an error trying to create anonymous users")
-                );
-                ctx.emit(AuthManagerEvent::CreateAnonymousUserFailed);
-            }
-        }
+    pub fn skip_remote_anonymous_user_creation(&self, ctx: &mut ModelContext<Self>) {
+        log::info!("Skipping Firebase anonymous-user creation in local-only build");
+        ctx.emit(AuthManagerEvent::SkippedLogin);
     }
 
     pub fn attempt_login_gated_feature(
         &self,
         feature: LoginGatedFeature,
-        auth_view_variant: AuthViewVariant,
-        ctx: &mut ModelContext<Self>,
+        _auth_view_variant: AuthViewVariant,
+        _ctx: &mut ModelContext<Self>,
     ) {
-        if self.auth_state.is_anonymous_or_logged_out() {
-            send_telemetry_from_ctx!(
-                TelemetryEvent::AnonymousUserAttemptLoginGatedFeature { feature },
-                ctx
-            );
-            ctx.emit(AuthManagerEvent::AttemptedLoginGatedFeature { auth_view_variant });
-        };
+        log::info!("Ignoring login-gated feature '{feature}' in local-only build");
     }
 
-    pub fn anonymous_user_hit_drive_object_limit(&self, ctx: &mut ModelContext<Self>) {
-        if self.auth_state.is_anonymous_or_logged_out() {
-            send_telemetry_from_ctx!(TelemetryEvent::AnonymousUserHitCloudObjectLimit, ctx);
-            ctx.emit(AuthManagerEvent::AttemptedLoginGatedFeature {
-                auth_view_variant: AuthViewVariant::HitDriveObjectLimitCloseable,
-            });
-        };
+    pub fn anonymous_user_hit_drive_object_limit(&self, _ctx: &mut ModelContext<Self>) {
+        log::info!("Ignoring anonymous-user object limit in local-only build");
     }
 
     pub fn initiate_anonymous_user_linking(
         &self,
-        entrypoint: AnonymousUserSignupEntrypoint,
-        ctx: &mut ModelContext<Self>,
+        _entrypoint: AnonymousUserSignupEntrypoint,
+        _ctx: &mut ModelContext<Self>,
     ) {
-        let auth_client = self.auth_client.clone();
-        let _ = ctx.spawn(
-            async move { auth_client.fetch_new_custom_token().await },
-            move |me, response, ctx| {
-                let custom_token = me.auth_client.on_custom_token_fetched(response);
-
-                match custom_token {
-                    Ok(custom_token) => {
-                        // Send synchronously since this is an important event in the sign up funnel and we
-                        // don't want to lose events if the user quits before the event queue is flushed.
-                        send_telemetry_sync_from_ctx!(
-                            TelemetryEvent::InitiateAnonymousUserSignup { entrypoint },
-                            ctx
-                        );
-                        let login_options_url = me.login_options_url(&custom_token);
-                        if cfg!(target_family = "wasm") {
-                            #[cfg(target_family = "wasm")]
-                            if let Some(current_url) = parse_current_url() {
-                                update_browser_url(
-                                    Url::parse(&format!(
-                                        "{}?redirect_to={}",
-                                        login_options_url,
-                                        current_url.path()
-                                    ))
-                                    .ok(),
-                                    true,
-                                );
-                            } else {
-                                update_browser_url(Url::parse(&login_options_url).ok(), true);
-                            }
-                        } else {
-                            ctx.open_url(&login_options_url);
-                        }
-                    }
-                    Err(e) => {
-                        ctx.emit(AuthManagerEvent::MintCustomTokenFailed(e));
-                    }
-                }
-            },
-        );
+        log::info!("Ignoring anonymous-user linking in local-only build");
     }
 
     // Opens a page in the web app and logs the user in using a customToken if they are an anonymous user.
@@ -710,60 +575,12 @@ impl AuthManager {
         ctx: &mut ModelContext<Self>,
         construct_url: URLConstructorCallback,
     ) {
-        if !self.auth_state.is_user_anonymous().unwrap_or_default()
-            || !self.auth_state.is_logged_in()
-        {
-            // Not an anonymous Firebase user, or fully logged out — open URL without token.
-            let url: String = construct_url(None);
-            ctx.open_url(&url);
-            return;
-        }
-
-        let auth_client = self.auth_client.clone();
-        let _ = ctx.spawn(
-            async move { auth_client.fetch_new_custom_token().await },
-            move |me, response, ctx| {
-                let custom_token = me.auth_client.on_custom_token_fetched(response);
-                match custom_token {
-                    Ok(custom_token) => {
-                        let url: String = construct_url(Some(&custom_token));
-                        ctx.open_url(&url);
-                    }
-                    Err(e) => {
-                        report_error!(anyhow!(
-                        "Failed to fetch custom token for authenticating anonymous user in browser: {e:?}"
-                    ))
-                }
-                };
-            },
-        );
+        let url = construct_url(None);
+        ctx.open_url(&url);
     }
 
-    pub fn copy_anonymous_user_linking_url_to_clipboard(&self, ctx: &mut ModelContext<Self>) {
-        if !self.auth_state.is_user_anonymous().unwrap_or_default() {
-            return;
-        }
-        let auth_client = self.auth_client.clone();
-        let _ = ctx.spawn(
-            async move { auth_client.fetch_new_custom_token().await },
-            move |me, response, ctx| {
-                let custom_token = me.auth_client.on_custom_token_fetched(response);
-
-                match custom_token {
-                    Ok(custom_token) => {
-                        let login_options_url = me.login_options_url(&custom_token);
-                        ctx.clipboard().write(ClipboardContent {
-                            plain_text: login_options_url,
-                            paths: None,
-                            ..Default::default()
-                        });
-                    }
-                    Err(e) => {
-                        ctx.emit(AuthManagerEvent::MintCustomTokenFailed(e));
-                    }
-                };
-            },
-        );
+    pub fn copy_anonymous_user_linking_url_to_clipboard(&self, _ctx: &mut ModelContext<Self>) {
+        log::info!("Ignoring anonymous-user linking URL copy in local-only build");
     }
 
     /// Generates a unique state parameter for the authentication flow.
@@ -774,56 +591,25 @@ impl AuthManager {
     }
 
     pub fn sign_up_url(&mut self) -> String {
-        let state = self.generate_auth_state();
-        format!(
-            // TODO: we should probably be able to remove the public_beta flag
-            "{}/signup/remote?scheme={}&state={}&public_beta=true",
-            ChannelState::server_root_url(),
-            ChannelState::url_scheme(),
-            state,
-        )
+        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
     }
 
     pub fn sign_in_url(&mut self) -> String {
-        let state = self.generate_auth_state();
-        format!(
-            "{}/login/remote?scheme={}&state={}",
-            ChannelState::server_root_url(),
-            ChannelState::url_scheme(),
-            state,
-        )
+        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
     }
 
     /// The upgrade confirmation page will kick the user back to the app with a refresh token
     /// if we send a `state` query param to /upgrade
     pub fn upgrade_url(&mut self) -> String {
-        let state = self.generate_auth_state();
-        format!(
-            "{}/upgrade?scheme={}&state={}",
-            ChannelState::server_root_url(),
-            ChannelState::url_scheme(),
-            state,
-        )
+        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
     }
 
-    pub fn login_options_url(&mut self, custom_token: &str) -> String {
-        let state = self.generate_auth_state();
-        format!(
-            "{}/login_options/{}?state={}",
-            ChannelState::server_root_url(),
-            custom_token,
-            state,
-        )
+    pub fn login_options_url(&mut self, _custom_token: &str) -> String {
+        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
     }
 
-    pub fn link_sso_url(&mut self, email: &str) -> String {
-        let state = self.generate_auth_state();
-        format!(
-            "{}/link_sso?email={}&state={}",
-            ChannelState::server_root_url(),
-            email,
-            state,
-        )
+    pub fn link_sso_url(&mut self, _email: &str) -> String {
+        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
     }
 
     /// Validates and consumes the pending auth state token. Returns `true` if the
@@ -853,21 +639,9 @@ impl AuthManager {
         }
     }
 
-    /// Sets the user as onboarded both on the server and locally.
-    /// This method:
-    /// 1. Updates the server by calling set_user_is_onboarded
-    /// 2. Updates the local auth state and persists the user data
+    /// Marks the local installation user as onboarded without contacting Warp servers.
     pub fn set_user_onboarded(&self, ctx: &mut ModelContext<Self>) {
-        // Update server
-        let auth_client = self.auth_client.clone();
-        let _ = ctx.spawn(
-            async move { auth_client.set_user_is_onboarded().await },
-            |_, _, _| {},
-        );
-
-        // Update local auth state and persist
         self.auth_state.set_is_onboarded(true);
-
         self.persist(ctx);
     }
 }

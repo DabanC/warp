@@ -16,7 +16,6 @@ use onboarding::slides::{layout, slide_content};
 use onboarding::{OnboardingIntention, AI_FEATURES, WARP_DRIVE_FEATURES};
 use pathfinder_color::ColorU;
 use ui_components::{button, Component as _, Options as _};
-use warp_core::features::FeatureFlag;
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::Icon;
 use warpui::clipboard::ClipboardContent;
@@ -399,15 +398,9 @@ impl LoginSlideView {
             },
             ctx
         );
-        if FeatureFlag::SkipFirebaseAnonymousUser.is_enabled() {
-            AuthManager::handle(ctx).update(ctx, |_, ctx| {
-                ctx.emit(AuthManagerEvent::SkippedLogin);
-            });
-        } else {
-            AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-                auth_manager.create_anonymous_user(None, ctx);
-            });
-        }
+        AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
+            auth_manager.skip_remote_anonymous_user_creation(ctx);
+        });
         ctx.emit(LoginSlideEvent::LoginLaterConfirmed);
     }
 
