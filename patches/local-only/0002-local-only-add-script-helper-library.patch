@@ -1,0 +1,72 @@
+From ca77404fbbdd8638a0ea19ee93445e52c0bab792 Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Thu, 21 May 2026 21:43:06 +0800
+Subject: [PATCH 2/7] local-only: add script helper library
+
+---
+ script/local-only/lib.sh | 53 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+ create mode 100755 script/local-only/lib.sh
+
+diff --git a/script/local-only/lib.sh b/script/local-only/lib.sh
+new file mode 100755
+index 00000000..1122ae1f
+--- /dev/null
++++ b/script/local-only/lib.sh
+@@ -0,0 +1,53 @@
++#!/usr/bin/env bash
++
++local_only_repo_root() {
++  git rev-parse --show-toplevel
++}
++
++local_only_die() {
++  echo "local-only: $*" >&2
++  exit 1
++}
++
++local_only_require_cmd() {
++  local cmd="$1"
++  command -v "$cmd" >/dev/null 2>&1 || local_only_die "required command not found: $cmd"
++}
++
++local_only_require_clean_worktree() {
++  local status
++  status="$(git status --porcelain)"
++  if [[ -n "$status" ]]; then
++    echo "$status" >&2
++    local_only_die "working tree must be clean"
++  fi
++}
++
++local_only_default_base_ref() {
++  if git rev-parse --verify upstream/master >/dev/null 2>&1; then
++    echo "upstream/master"
++  elif git rev-parse --verify origin/master >/dev/null 2>&1; then
++    echo "origin/master"
++  elif git rev-parse --verify master >/dev/null 2>&1; then
++    echo "master"
++  else
++    local_only_die "could not find upstream/master, origin/master, or master"
++  fi
++}
++
++local_only_patch_dir() {
++  local root
++  root="$(local_only_repo_root)"
++  echo "$root/patches/local-only"
++}
++
++local_only_series_file() {
++  local patch_dir="$1"
++  echo "$patch_dir/series"
++}
++
++local_only_print_header() {
++  local title="$1"
++  echo
++  echo "==> $title"
++}
+-- 
+2.53.0
+

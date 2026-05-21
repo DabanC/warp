@@ -1,0 +1,143 @@
+From 1762e960a1a72947eedd3eb9eeab61508d036da4 Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Fri, 22 May 2026 01:03:13 +0800
+Subject: [PATCH 7/7] local-only: add packaging wrapper
+
+---
+ script/local-only/package       | 83 +++++++++++++++++++++++++++++++++
+ script/local-only/release-check | 33 +++++++++++++
+ 2 files changed, 116 insertions(+)
+ create mode 100755 script/local-only/package
+ create mode 100755 script/local-only/release-check
+
+diff --git a/script/local-only/package b/script/local-only/package
+new file mode 100755
+index 00000000..2842b1e2
+--- /dev/null
++++ b/script/local-only/package
+@@ -0,0 +1,83 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++ROOT="$(git rev-parse --show-toplevel)"
++# shellcheck source=script/local-only/lib.sh
++source "$ROOT/script/local-only/lib.sh"
++
++usage() {
++  cat <<'USAGE'
++Usage: script/local-only/package [--skip-verify] [--debug]
++
++Runs local-only verification and then invokes the platform packaging script.
++
++Environment:
++  LOCAL_ONLY_VERIFY_ARGS  Extra arguments passed to script/local-only/verify.
++USAGE
++}
++
++SKIP_VERIFY=false
++DEBUG=false
++
++while (( "$#" )); do
++  case "$1" in
++    --skip-verify)
++      SKIP_VERIFY=true
++      shift
++      ;;
++    --debug)
++      DEBUG=true
++      shift
++      ;;
++    -h|--help)
++      usage
++      exit 0
++      ;;
++    *)
++      local_only_die "unknown argument: $1"
++      ;;
++  esac
++done
++
++cd "$ROOT"
++
++if [[ "$SKIP_VERIFY" == false ]]; then
++  local_only_print_header "Running local-only verification before packaging"
++  VERIFY_ARGS=()
++  if [[ -n "${LOCAL_ONLY_VERIFY_ARGS:-}" ]]; then
++    read -r -a VERIFY_ARGS <<< "$LOCAL_ONLY_VERIFY_ARGS"
++  fi
++  script/local-only/verify "${VERIFY_ARGS[@]}"
++fi
++
++local_only_print_header "Packaging local-only desktop artifact"
++case "$(uname -s)" in
++  Darwin)
++    if [[ "$DEBUG" == true ]]; then
++      script/macos/bundle --nosign --nouniversal --debug -c local
++    else
++      script/macos/bundle --nosign --nouniversal -c local
++    fi
++    ;;
++  Linux)
++    if [[ "$DEBUG" == true ]]; then
++      script/linux/bundle --debug -c local
++    else
++      script/linux/bundle -c local
++    fi
++    ;;
++  MINGW*|MSYS*|CYGWIN*)
++    if command -v pwsh >/dev/null 2>&1; then
++      if [[ "$DEBUG" == true ]]; then
++        pwsh script/windows/bundle.ps1 -DEBUG_BUILD -CHANNEL local
++      else
++        pwsh script/windows/bundle.ps1 -CHANNEL local
++      fi
++    else
++      local_only_die "Windows packaging requires pwsh"
++    fi
++    ;;
++  *)
++    local_only_die "unsupported packaging platform: $(uname -s)"
++    ;;
++esac
+diff --git a/script/local-only/release-check b/script/local-only/release-check
+new file mode 100755
+index 00000000..f799b0cd
+--- /dev/null
++++ b/script/local-only/release-check
+@@ -0,0 +1,33 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++ROOT="$(git rev-parse --show-toplevel)"
++# shellcheck source=script/local-only/lib.sh
++source "$ROOT/script/local-only/lib.sh"
++
++cd "$ROOT"
++
++local_only_print_header "Release source state"
++git status --short
++
++if [[ -n "$(git status --porcelain)" ]]; then
++  local_only_die "working tree must be clean before release check"
++fi
++
++local_only_print_header "Running local-only verification"
++script/local-only/verify
++
++local_only_print_header "Manual smoke checklist"
++cat <<'CHECKLIST'
++Confirm these before publishing the packaged artifact:
++
++[ ] App launches without sign-in, sign-up, account, or team prompts.
++[ ] Core terminal opens and accepts input.
++[ ] Local settings open.
++[ ] Account, team, billing, upgrade, Warp Drive cloud, sharing, cloud notebook, managed secret, quota, and out-of-credits UI surfaces are absent or unreachable.
++[ ] AI settings expose API key, Base URL, and model configuration when a model is required.
++[ ] With no AI configuration, AI features show a local configuration error.
++[ ] With AI configured, the only AI request goes to the configured Base URL.
++[ ] Provider 401, 403, 429, and 5xx responses do not trigger Warp login, quota, or upgrade UI.
++[ ] Startup produces no background external network requests.
++CHECKLIST
+-- 
+2.53.0
+

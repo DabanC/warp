@@ -1,0 +1,187 @@
+From 026a058e6ecc730d9f5e5b6e0dfaa5134301fbeb Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Fri, 22 May 2026 01:03:13 +0800
+Subject: [PATCH 6/7] local-only: add verification script
+
+---
+ script/local-only/verify | 168 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 168 insertions(+)
+ create mode 100755 script/local-only/verify
+
+diff --git a/script/local-only/verify b/script/local-only/verify
+new file mode 100755
+index 00000000..e2c12305
+--- /dev/null
++++ b/script/local-only/verify
+@@ -0,0 +1,168 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++ROOT="$(git rev-parse --show-toplevel)"
++# shellcheck source=script/local-only/lib.sh
++source "$ROOT/script/local-only/lib.sh"
++
++RUN_CARGO=true
++RUN_STATIC=true
++RUN_SELF_TEST=false
++
++usage() {
++  cat <<'USAGE'
++Usage: script/local-only/verify [--self-test] [--static-only] [--skip-static] [--skip-cargo]
++
++Runs local-only verification checks.
++
++Options:
++  --self-test     Validate the verifier against generated pass/fail fixtures.
++  --static-only   Run static scans without cargo check.
++  --skip-static   Run cargo check without static scans.
++  --skip-cargo    Run static scans without cargo check.
++USAGE
++}
++
++while (( "$#" )); do
++  case "$1" in
++    --self-test)
++      RUN_SELF_TEST=true
++      RUN_CARGO=false
++      RUN_STATIC=false
++      shift
++      ;;
++    --static-only)
++      RUN_CARGO=false
++      RUN_STATIC=true
++      shift
++      ;;
++    --skip-static)
++      RUN_STATIC=false
++      shift
++      ;;
++    --skip-cargo)
++      RUN_CARGO=false
++      shift
++      ;;
++    -h|--help)
++      usage
++      exit 0
++      ;;
++    *)
++      local_only_die "unknown argument: $1"
++      ;;
++  esac
++done
++
++local_only_require_cmd git
++local_only_require_cmd rg
++
++FORBIDDEN_REGEX='(app\.warp\.dev|api\.warp\.dev|graphql/v2|stripeBillingPortal|freeAvailableModels|GetRequestLimitInfo|GetAiOveragesForWorkspace|createAnonymousUser|create_anonymous_user|Rudder|rudder|Sentry|sentry|crash_reporting|crash reporting|remote config|feature flag fetch|warp_server_client|warp_graphql|firebase|managed_secrets|BillingMetadata|CustomerType|DelinquencyStatus)'
++REQUIRED_REGEX='(api key|API key|ApiKey|base_url|Base URL|base URL|custom endpoint|custom_endpoint)'
++SCAN_TARGETS=("app/src" "crates" "Cargo.toml" "app/Cargo.toml")
++
++scan_forbidden() {
++  local scan_root="$1"
++  shift
++  local -a targets=("$@")
++  local -a existing_targets=()
++
++  for target in "${targets[@]}"; do
++    if [[ -e "$scan_root/$target" ]]; then
++      existing_targets+=("$scan_root/$target")
++    fi
++  done
++
++  if [[ "${#existing_targets[@]}" -eq 0 ]]; then
++    echo "No scan targets exist under $scan_root"
++    return 0
++  fi
++
++  local rg_status
++  rg_status=0
++  rg -n --hidden --glob '!target/**' --glob '!.git/**' --glob '!docs/superpowers/**' --glob '!patches/local-only/**' "$FORBIDDEN_REGEX" "${existing_targets[@]}" || rg_status="$?"
++
++  case "$rg_status" in
++    0)
++      return 1
++      ;;
++    1)
++      return 0
++      ;;
++    *)
++      local_only_die "ripgrep forbidden scan failed with status $rg_status"
++      ;;
++  esac
++}
++
++scan_required_ai_config() {
++  local scan_root="$1"
++  if rg -n --hidden --glob '!target/**' --glob '!.git/**' "$REQUIRED_REGEX" "$scan_root/app/src" "$scan_root/crates/ai" >/dev/null 2>&1; then
++    return 0
++  fi
++  return 1
++}
++
++run_self_test() {
++  local_only_print_header "Running verifier self-test"
++  local tmp
++  tmp="$(mktemp -d)"
++  trap 'rm -rf "$tmp"' RETURN
++  mkdir -p "$tmp/app/src" "$tmp/crates/ai"
++
++  cat > "$tmp/app/src/local.rs" <<'PASS_FIXTURE'
++pub fn local_terminal_marker() -> &'static str {
++    "local terminal"
++}
++PASS_FIXTURE
++
++  cat > "$tmp/crates/ai/config.rs" <<'AI_FIXTURE'
++pub struct LocalAiConfig {
++    pub api_key: String,
++    pub base_url: String,
++}
++AI_FIXTURE
++
++  if ! scan_forbidden "$tmp" "app/src" "crates"; then
++    local_only_die "self-test pass fixture was reported as forbidden"
++  fi
++
++  cat > "$tmp/app/src/cloud.rs" <<'FAIL_FIXTURE'
++pub const WARP_GRAPHQL: &str = "https://app.warp.dev/graphql/v2";
++FAIL_FIXTURE
++
++  if scan_forbidden "$tmp" "app/src" "crates"; then
++    local_only_die "self-test fail fixture was not reported as forbidden"
++  fi
++
++  if ! scan_required_ai_config "$tmp"; then
++    local_only_die "self-test AI config fixture was not detected"
++  fi
++
++  rm -rf "$tmp"
++  echo "Verifier self-test passed."
++}
++
++if [[ "$RUN_SELF_TEST" == true ]]; then
++  run_self_test
++  exit 0
++fi
++
++if [[ "$RUN_CARGO" == true ]]; then
++  local_only_print_header "Running cargo check for app"
++  cargo check -p warp --bin warp-oss
++fi
++
++if [[ "$RUN_STATIC" == true ]]; then
++  local_only_print_header "Scanning for forbidden cloud/account surfaces"
++  if ! scan_forbidden "$ROOT" "${SCAN_TARGETS[@]}"; then
++    local_only_die "forbidden cloud/account surfaces remain"
++  fi
++
++  local_only_print_header "Checking AI configuration surface"
++  if ! scan_required_ai_config "$ROOT"; then
++    local_only_die "could not find AI API key/Base URL configuration surface"
++  fi
++fi
++
++echo "Local-only verification passed."
+-- 
+2.53.0
+

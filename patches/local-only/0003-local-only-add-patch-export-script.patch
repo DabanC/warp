@@ -1,0 +1,78 @@
+From c2ab997bdf86e509242613b9ae0f8301c5a9dd4f Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Thu, 21 May 2026 22:10:24 +0800
+Subject: [PATCH 3/7] local-only: add patch export script
+
+---
+ script/local-only/export-patches | 59 ++++++++++++++++++++++++++++++++
+ 1 file changed, 59 insertions(+)
+ create mode 100755 script/local-only/export-patches
+
+diff --git a/script/local-only/export-patches b/script/local-only/export-patches
+new file mode 100755
+index 00000000..6811953e
+--- /dev/null
++++ b/script/local-only/export-patches
+@@ -0,0 +1,59 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++ROOT="$(git rev-parse --show-toplevel)"
++# shellcheck source=script/local-only/lib.sh
++source "$ROOT/script/local-only/lib.sh"
++
++usage() {
++  cat <<'USAGE'
++Usage: script/local-only/export-patches [BASE_REF]
++
++Exports commits from BASE_REF..HEAD to patches/local-only/*.patch and rewrites
++patches/local-only/series. BASE_REF defaults to upstream/master, origin/master,
++or master, whichever exists first.
++USAGE
++}
++
++if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
++  usage
++  exit 0
++fi
++
++local_only_require_cmd git
++local_only_require_clean_worktree
++
++BASE_REF="${1:-$(local_only_default_base_ref)}"
++PATCH_DIR="$(local_only_patch_dir)"
++SERIES_FILE="$(local_only_series_file "$PATCH_DIR")"
++
++if ! git rev-parse --verify "$BASE_REF" >/dev/null 2>&1; then
++  local_only_die "base ref does not exist: $BASE_REF"
++fi
++
++local_only_print_header "Exporting local-only patches"
++echo "Base ref: $BASE_REF"
++echo "Patch dir: $PATCH_DIR"
++
++mkdir -p "$PATCH_DIR"
++rm -f "$PATCH_DIR"/*.patch "$SERIES_FILE"
++
++PATCH_COUNT="$(git rev-list --count "$BASE_REF..HEAD")"
++if [[ "$PATCH_COUNT" == "0" ]]; then
++  : > "$SERIES_FILE"
++  echo "No commits to export. Wrote empty series file."
++  exit 0
++fi
++
++git format-patch \
++  --output-directory "$PATCH_DIR" \
++  "$BASE_REF..HEAD" \
++  -- \
++  . \
++  ':(exclude)patches/local-only/*.patch' \
++  ':(exclude)patches/local-only/series'
++
++find "$PATCH_DIR" -maxdepth 1 -type f -name '*.patch' -exec basename {} \; | sort > "$SERIES_FILE"
++
++echo "Exported patches:"
++cat "$SERIES_FILE"
+-- 
+2.53.0
+
