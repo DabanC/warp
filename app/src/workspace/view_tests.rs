@@ -2413,6 +2413,33 @@ fn test_left_panel_window_scoped_disabled_keeps_per_tab_state() {
 }
 
 #[test]
+fn test_toggle_left_panel_after_stale_warp_drive_restore_selects_local_view() {
+    let _conversation_list_guard =
+        FeatureFlag::AgentViewConversationListView.override_enabled(false);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.left_panel_view.update(ctx, |left_panel, ctx| {
+                left_panel.restore_active_view_from_snapshot(None, ctx);
+            });
+            assert_eq!(workspace.left_panel_view.as_ref(ctx).active_view(), None);
+
+            workspace.handle_action(&WorkspaceAction::ToggleLeftPanel, ctx);
+
+            assert!(workspace.active_tab_pane_group().as_ref(ctx).left_panel_open);
+            assert_eq!(
+                workspace.left_panel_view.as_ref(ctx).active_view(),
+                Some(ToolPanelView::ProjectExplorer)
+            );
+        });
+    });
+}
+
+#[test]
 fn test_vertical_tabs_panel_visibility_restores_from_window_snapshot() {
     let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
     App::test((), |mut app| async move {
@@ -3092,7 +3119,7 @@ fn test_standard_tab_context_menu_shows_hover_only_tab_bar() {
 }
 
 #[test]
-fn test_open_cloud_agent_setup_guide_action_opens_management_view_and_is_idempotent() {
+fn test_open_cloud_agent_setup_guide_action_is_inert_in_local_only_build() {
     let _agent_management_guard = FeatureFlag::AgentManagementView.override_enabled(true);
 
     App::test((), |mut app| async move {
@@ -3109,22 +3136,22 @@ fn test_open_cloud_agent_setup_guide_action_opens_management_view_and_is_idempot
 
             workspace.handle_action(&WorkspaceAction::OpenCloudAgentSetupGuide, ctx);
             assert!(
-                workspace
+                !workspace
                     .current_workspace_state
                     .is_agent_management_view_open
             );
-            assert!(workspace
+            assert!(!workspace
                 .agent_management_view
                 .as_ref(ctx)
                 .is_showing_setup_guide());
 
             workspace.handle_action(&WorkspaceAction::OpenCloudAgentSetupGuide, ctx);
             assert!(
-                workspace
+                !workspace
                     .current_workspace_state
                     .is_agent_management_view_open
             );
-            assert!(workspace
+            assert!(!workspace
                 .agent_management_view
                 .as_ref(ctx)
                 .is_showing_setup_guide());

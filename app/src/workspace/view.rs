@@ -21597,7 +21597,11 @@ impl TypedActionView for Workspace {
                 let is_open = active_pane_group.read(ctx, |pg, _| pg.left_panel_open);
 
                 if !was_open && is_open {
+                    let fallback_view = self.left_panel_views.first().copied();
                     self.left_panel_view.update(ctx, |left_panel, ctx| {
+                        if left_panel.active_view().is_none() {
+                            left_panel.restore_active_view_from_snapshot(fallback_view, ctx);
+                        }
                         left_panel.focus_active_view_on_entry(ctx);
                     });
 
