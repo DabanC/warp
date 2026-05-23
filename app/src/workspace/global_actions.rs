@@ -1,11 +1,9 @@
-use crate::auth;
+use crate::app_state::get_app_state;
 use crate::network::NetworkStatus;
 use crate::persistence::ModelEvent;
-use crate::server::server_api::auth::AuthClient;
 use crate::terminal::alt_screen_reporting::AltScreenReporting;
 use crate::terminal::general_settings::GeneralSettings;
 use crate::workspace::cross_window_tab_drag::CrossWindowTabDrag;
-use crate::{app_state::get_app_state, server::server_api::ServerApiProvider};
 use ::settings::ToggleableSetting;
 use warp_core::execution_mode::AppExecutionMode;
 
@@ -16,7 +14,6 @@ use crate::undo_close::UndoCloseStack;
 use crate::workspace::{Workspace, WorkspaceAction};
 use crate::GlobalResourceHandlesProvider;
 use std::path::PathBuf;
-use warp_graphql::mutations::create_anonymous_user::AnonymousUserType;
 use warpui::windowing::WindowManager;
 use warpui::{AppContext, SingletonEntity, TypedActionView};
 
@@ -81,10 +78,6 @@ pub fn init_global_actions(app: &mut AppContext) {
     app.add_global_action(
         "workspace:toggle_debug_network_status",
         toggle_debug_network_status,
-    );
-    app.add_global_action(
-        "workspace:debug_create_anonymous_user",
-        create_anonymous_user,
     );
     app.add_global_action("workspace:open_repository", open_repository);
     app.add_global_action("app:undo_close", undo_close);
@@ -170,18 +163,6 @@ fn toggle_debug_network_status(_: &(), ctx: &mut AppContext) {
     });
 }
 
-fn create_anonymous_user(_: &(), ctx: &mut AppContext) {
-    log::info!("Creating anonymous user");
-    let anonymous_user_type = AnonymousUserType::NativeClientAnonymousUser;
-    let server_api = ServerApiProvider::handle(ctx).read(ctx, |provider, _ctx| provider.get());
-    let result =
-        warpui::r#async::block_on(server_api.create_anonymous_user(None, anonymous_user_type));
-    match result {
-        Ok(user) => log::info!("Successfully created anonymous user {user:?}"),
-        Err(err) => log::error!("Failed to create anonymous user: {err:?}"),
-    }
-}
-
 /// Reopens the last closed item (window or tab).
 fn undo_close(_: &(), ctx: &mut AppContext) {
     UndoCloseStack::handle(ctx).update(ctx, |stack, ctx| {
@@ -189,8 +170,8 @@ fn undo_close(_: &(), ctx: &mut AppContext) {
     });
 }
 
-fn trigger_maybe_log_out(_: &(), ctx: &mut AppContext) {
-    auth::maybe_log_out(ctx)
+fn trigger_maybe_log_out(_: &(), _ctx: &mut AppContext) {
+    log::info!("Ignoring logout action in local-only build");
 }
 
 /// Dispatches an action to the active workspace, if one exists.
@@ -246,6 +227,6 @@ fn summarize_ai_conversation(prompt: &Option<String>, ctx: &mut AppContext) {
     );
 }
 
-fn trigger_log_out(_: &(), ctx: &mut AppContext) {
-    auth::log_out(ctx)
+fn trigger_log_out(_: &(), _ctx: &mut AppContext) {
+    log::info!("Ignoring logout action in local-only build");
 }

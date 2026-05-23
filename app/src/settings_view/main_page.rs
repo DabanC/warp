@@ -59,7 +59,6 @@ const PHOTO_SIZE: f32 = 40.;
 const REFERRAL_CTA: &str = "Earn rewards by sharing Warp with friends & colleagues";
 const REGULAR_TEXT_FONT_SIZE: f32 = 12.;
 const VERTICAL_MARGIN: f32 = 24.;
-const LOG_OUT_TEXT: &str = "Log out";
 lazy_static! {
     static ref SETTINGS_SYNC_BINDINGS_ADDED: Arc<Mutex<bool>> = Default::default();
 }
@@ -284,8 +283,6 @@ impl MainSettingsPageView {
         if ChannelState::app_version().is_some() {
             widgets.push(Box::new(VersionInfoWidget::default()));
         }
-
-        widgets.push(Box::new(LogoutWidget::default()));
 
         let page = PageType::new_uncategorized(widgets, Some("Account"));
 
@@ -1035,59 +1032,6 @@ impl SettingsWidget for VersionInfoWidget {
             log::error!("Shouldn't render VersionInfoWidget without GIT_RELEASE_TAG");
             Empty::new().finish()
         }
-    }
-}
-
-#[derive(Default)]
-struct LogoutWidget {
-    mouse_state: MouseStateHandle,
-}
-
-impl LogoutWidget {
-    fn render_logout_button(&self, appearance: &Appearance) -> Box<dyn Element> {
-        appearance
-            .ui_builder()
-            .button(ButtonVariant::Secondary, self.mouse_state.clone())
-            .with_text_label(LOG_OUT_TEXT.into())
-            .with_style(UiComponentStyles {
-                font_size: Some(14.),
-                padding: Some(Coords::uniform(8.).left(32.).right(32.)),
-                ..Default::default()
-            })
-            .build()
-            .on_click(|ctx, _, _| {
-                ctx.dispatch_typed_action(WorkspaceAction::LogOut);
-            })
-            .finish()
-    }
-}
-
-impl SettingsWidget for LogoutWidget {
-    type View = MainSettingsPageView;
-
-    fn search_terms(&self) -> &str {
-        "sign out log out logout"
-    }
-
-    fn should_render(&self, app: &AppContext) -> bool {
-        !AuthStateProvider::as_ref(app)
-            .get()
-            .is_anonymous_or_logged_out()
-    }
-
-    fn render(
-        &self,
-        _view: &Self::View,
-        appearance: &Appearance,
-        _app: &AppContext,
-    ) -> Box<dyn Element> {
-        Container::new(
-            Align::new(self.render_logout_button(appearance))
-                .left()
-                .finish(),
-        )
-        .with_margin_top(VERTICAL_MARGIN)
-        .finish()
     }
 }
 
