@@ -19,3 +19,4 @@
 0019-local-only-disable-residual-account-ingress-paths.patch
 0020-local-only-remove-residual-account-UI-entry-points.patch
 0021-local-only-clean-account-UI-removal-warnings.patch
+0022-local-only-remove-onboarding-welcome-login-prompt.patch

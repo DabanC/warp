@@ -1,0 +1,413 @@
+From 79517647a58acaaf17cef9aa1ad2991533bf1797 Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Sat, 23 May 2026 23:23:44 +0800
+Subject: [PATCH 22/22] local-only: remove onboarding welcome login prompt
+
+Remove the remaining welcome-screen login link so the local-only fork does not advertise Warp account sign-in during onboarding.
+---
+ app/src/auth/mod.rs                           |  1 -
+ app/src/auth/needs_sso_link_view.rs           |  4 +-
+ app/src/root_view.rs                          | 19 +----
+ app/src/settings_view/main_page.rs            |  6 +-
+ app/src/workspace/view.rs                     |  2 +-
+ .../onboarding/src/agent_onboarding_view.rs   | 11 +--
+ crates/onboarding/src/bin/main.rs             |  1 -
+ crates/onboarding/src/slides/intro_slide.rs   | 71 ++-----------------
+ crates/onboarding/src/slides/mod.rs           |  2 +-
+ script/local-only/verify                      | 50 +++++++++++++
+ 10 files changed, 66 insertions(+), 101 deletions(-)
+
+diff --git a/app/src/auth/mod.rs b/app/src/auth/mod.rs
+index 95afbb12..d6069cf4 100644
+--- a/app/src/auth/mod.rs
++++ b/app/src/auth/mod.rs
+@@ -19,7 +19,6 @@ pub mod web_handoff;
+ 
+ pub use auth_manager::AuthManager;
+ pub use auth_state::AuthStateProvider;
+-pub use login_failure_notification::LoginFailureReason;
+ pub use user_uid::UserUid;
+ 
+ use warpui::AppContext;
+diff --git a/app/src/auth/needs_sso_link_view.rs b/app/src/auth/needs_sso_link_view.rs
+index b919af8f..1f4635d5 100644
+--- a/app/src/auth/needs_sso_link_view.rs
++++ b/app/src/auth/needs_sso_link_view.rs
+@@ -1,5 +1,7 @@
+ use crate::auth::login_error_modal::LoginErrorModal;
+-use warpui::{AppContext, Element, Entity, TypedActionView, View};
++use warpui::{
++    ui_components::components::UiComponent, AppContext, Element, Entity, TypedActionView, View,
++};
+ 
+ pub struct NeedsSsoLinkView;
+ 
+diff --git a/app/src/root_view.rs b/app/src/root_view.rs
+index e4fcc49b..fd474cbe 100644
+--- a/app/src/root_view.rs
++++ b/app/src/root_view.rs
+@@ -8,7 +8,7 @@ use crate::auth::auth_view_modal::AuthRedirectPayload;
+ use crate::auth::login_slide::{LoginSlideEvent, LoginSlideView};
+ use crate::auth::needs_sso_link_view::NeedsSsoLinkView;
+ use crate::auth::paste_auth_token_modal::PasteAuthTokenModalView;
+-use crate::auth::{AuthStateProvider, LoginFailureReason};
++use crate::auth::AuthStateProvider;
+ use crate::autoupdate::{AutoupdateState, AutoupdateStateEvent};
+ use crate::cloud_object::model::persistence::CloudModel;
+ use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, ObjectType};
+@@ -1653,6 +1653,7 @@ impl RootView {
+     ) -> Self {
+         let server_api_provider = ServerApiProvider::as_ref(ctx);
+         let server_api = server_api_provider.get();
++        #[cfg(target_family = "wasm")]
+         let auth_state = AuthStateProvider::as_ref(ctx).get().clone();
+ 
+         ctx.subscribe_to_model(&AuthManager::handle(ctx), |me, _, event, ctx| {
+@@ -2222,22 +2223,6 @@ impl RootView {
+             AgentOnboardingEvent::PrivacySettingsFromTerminalThemeSlideRequested => {
+                 log::info!("Privacy-settings login slide is disabled in local-only build");
+             }
+-            AgentOnboardingEvent::LoginFromWelcomeRequested => {
+-                let AuthOnboardingState::Onboarding { target, .. } = &self.auth_onboarding_state
+-                else {
+-                    return;
+-                };
+-                mark_local_onboarding_completed(ctx);
+-                if FeatureFlag::HOAOnboardingFlow.is_enabled() {
+-                    mark_hoa_onboarding_completed(ctx);
+-                }
+-                let workspace = target.clone().to_workspace(ctx);
+-                self.auth_onboarding_state = AuthOnboardingState::Terminal(workspace);
+-                ctx.emit(RootViewEvent::AuthOnboardingStateChanged);
+-                self.start_autoupdate_polling(ctx);
+-                self.focus(ctx);
+-                ctx.notify();
+-            }
+             AgentOnboardingEvent::AppBecameActive => {
+                 log::info!("Ignoring remote onboarding active refresh in local-only build");
+             }
+diff --git a/app/src/settings_view/main_page.rs b/app/src/settings_view/main_page.rs
+index 65c7a36d..c4a710f3 100644
+--- a/app/src/settings_view/main_page.rs
++++ b/app/src/settings_view/main_page.rs
+@@ -238,7 +238,7 @@ impl AccountWidget {
+         if let Some(user_id) = auth_state.user_id() {
+             plan_info.add_child(
+                 Text::new_inline(
+-                    user_id.as_str(),
++                    user_id.to_string(),
+                     appearance.ui_font_family(),
+                     REGULAR_TEXT_FONT_SIZE,
+                 )
+@@ -354,7 +354,7 @@ impl AccountWidget {
+         if let Some(user_id) = auth_state.user_id() {
+             plan_info.add_child(
+                 Text::new_inline(
+-                    user_id.as_str(),
++                    user_id.to_string(),
+                     appearance.ui_font_family(),
+                     REGULAR_TEXT_FONT_SIZE,
+                 )
+@@ -394,7 +394,7 @@ impl SettingsWidget for AccountWidget {
+         &self,
+         view: &Self::View,
+         appearance: &Appearance,
+-        app: &AppContext,
++        _app: &AppContext,
+     ) -> Box<dyn Element> {
+         let account_info = if view.auth_state.is_anonymous_or_logged_out() {
+             self.render_anonymous_account_info(view.auth_state.as_ref(), appearance)
+diff --git a/app/src/workspace/view.rs b/app/src/workspace/view.rs
+index 97c01600..4a5d4597 100644
+--- a/app/src/workspace/view.rs
++++ b/app/src/workspace/view.rs
+@@ -426,7 +426,7 @@ use warpui::elements::{
+     CacheOption, DispatchEventResult, DraggableState, DropTarget, EventHandler, Image,
+     MouseInBehavior, Rect,
+ };
+-use warpui::ui_components::button::{Button, ButtonVariant};
++use warpui::ui_components::button::Button;
+ use warpui::windowing::{state::ApplicationStage, StateEvent, WindowManager};
+ use warpui::{elements::MouseStateHandle, fonts::Properties};
+ 
+diff --git a/crates/onboarding/src/agent_onboarding_view.rs b/crates/onboarding/src/agent_onboarding_view.rs
+index 021bcc37..86dcd886 100644
+--- a/crates/onboarding/src/agent_onboarding_view.rs
++++ b/crates/onboarding/src/agent_onboarding_view.rs
+@@ -4,8 +4,8 @@ use crate::model::{
+ };
+ use crate::slides::{
+     AgentSlide, AgentSlideEvent, CustomizeUISlide, FreeUserNoAiSlide, IntentionSlide, IntroSlide,
+-    IntroSlideEvent, OnboardingModelInfo, OnboardingSlide, ProjectSlide, ThemePickerSlide,
+-    ThemePickerSlideEvent, ThirdPartySlide,
++    OnboardingModelInfo, OnboardingSlide, ProjectSlide, ThemePickerSlide, ThemePickerSlideEvent,
++    ThirdPartySlide,
+ };
+ use crate::telemetry::OnboardingEvent;
+ use ai::LLMId;
+@@ -48,7 +48,6 @@ pub enum AgentOnboardingEvent {
+     },
+     OnboardingCompleted(SelectedSettings),
+     OnboardingSkipped,
+-    LoginFromWelcomeRequested,
+     /// Emitted when the user clicks the "Privacy Settings" link on the terminal
+     /// intention theme slide. The variant name encodes that the event is only
+     /// emitted from the terminal-intention theme slide; consumers (e.g. a
+@@ -156,12 +155,6 @@ impl AgentOnboardingView {
+             ctx.add_typed_action_view(move |_| IntroSlide::new(onboarding_state))
+         };
+ 
+-        ctx.subscribe_to_view(&intro_slide, |_me, _view, event, ctx| match event {
+-            IntroSlideEvent::LoginRequested => {
+-                ctx.emit(AgentOnboardingEvent::LoginFromWelcomeRequested);
+-            }
+-        });
+-
+         let theme_picker_slide = {
+             let themes = theme_picker_themes.clone();
+             let onboarding_state = onboarding_state.clone();
+diff --git a/crates/onboarding/src/bin/main.rs b/crates/onboarding/src/bin/main.rs
+index 8bae20e5..56d8be2c 100644
+--- a/crates/onboarding/src/bin/main.rs
++++ b/crates/onboarding/src/bin/main.rs
+@@ -165,7 +165,6 @@ impl OnboardingMainView {
+             | AgentOnboardingEvent::UpgradeRequested
+             | AgentOnboardingEvent::UpgradeCopyUrlRequested
+             | AgentOnboardingEvent::UpgradePasteTokenFromClipboardRequested
+-            | AgentOnboardingEvent::LoginFromWelcomeRequested
+             | AgentOnboardingEvent::PrivacySettingsFromTerminalThemeSlideRequested
+             | AgentOnboardingEvent::AppBecameActive => {
+                 // No-op in the standalone demo binary
+diff --git a/crates/onboarding/src/slides/intro_slide.rs b/crates/onboarding/src/slides/intro_slide.rs
+index 3305649f..c98eeeca 100644
+--- a/crates/onboarding/src/slides/intro_slide.rs
++++ b/crates/onboarding/src/slides/intro_slide.rs
+@@ -3,40 +3,30 @@ use crate::OnboardingEvent;
+ 
+ use super::OnboardingSlide;
+ use pathfinder_color::ColorU;
+-use pathfinder_geometry::vector::vec2f;
+ use ui_components::{button, Component as _, Options as _};
+ use warp_core::send_telemetry_from_ctx;
+ use warp_core::ui::{appearance::Appearance, theme::color::internal_colors, Icon};
+ use warpui::{
+     elements::{
+         shimmering_text::{ShimmerConfig, ShimmeringTextElement, ShimmeringTextStateHandle},
+-        Align, ChildAnchor, ConstrainedBox, Container, CrossAxisAlignment, Flex,
+-        FormattedTextElement, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning,
+-        ParentAnchor, ParentElement, ParentOffsetBounds, Stack,
++        Align, ConstrainedBox, Container, CrossAxisAlignment, Flex, FormattedTextElement,
++        MainAxisAlignment, MainAxisSize, ParentElement,
+     },
+     keymap::Keystroke,
+     text_layout::TextAlignment,
+-    ui_components::components::{UiComponent as _, UiComponentStyles},
+     AppContext, Element, Entity, ModelHandle, SingletonEntity as _, TypedActionView, View,
+     ViewContext,
+ };
+ 
+-#[derive(Clone, Debug)]
+-pub enum IntroSlideEvent {
+-    LoginRequested,
+-}
+-
+ #[derive(Clone, Debug)]
+ pub enum IntroSlideAction {
+     GetStartedClicked,
+-    LoginClicked,
+ }
+ 
+ pub struct IntroSlide {
+     onboarding_state: ModelHandle<OnboardingStateModel>,
+     get_started_button: button::Button,
+     shimmering_title_handle: ShimmeringTextStateHandle,
+-    login_mouse_state: MouseStateHandle,
+ }
+ 
+ impl IntroSlide {
+@@ -45,13 +35,12 @@ impl IntroSlide {
+             onboarding_state,
+             get_started_button: button::Button::default(),
+             shimmering_title_handle: ShimmeringTextStateHandle::new(),
+-            login_mouse_state: MouseStateHandle::default(),
+         }
+     }
+ }
+ 
+ impl Entity for IntroSlide {
+-    type Event = IntroSlideEvent;
++    type Event = ();
+ }
+ 
+ impl View for IntroSlide {
+@@ -61,60 +50,12 @@ impl View for IntroSlide {
+ 
+     fn render(&self, app: &AppContext) -> Box<dyn Element> {
+         let appearance = Appearance::as_ref(app);
+-        let theme = appearance.theme();
+         let content = self.render_centered_content(appearance);
+         let constrained = ConstrainedBox::new(content).with_max_width(421.).finish();
+         // Background is rendered by the parent onboarding view (including background images).
+         let centered = Container::new(Align::new(constrained).finish()).finish();
+ 
+-        let sub_text_color = internal_colors::text_sub(theme, theme.background().into_solid());
+-        let ui_builder = appearance.ui_builder();
+-        let disclaimer_styles = UiComponentStyles {
+-            font_color: Some(sub_text_color),
+-            font_size: Some(12.),
+-            ..Default::default()
+-        };
+-
+-        let login_row = Flex::row()
+-            .with_child(
+-                ui_builder
+-                    .span("Already have an account? ")
+-                    .with_style(disclaimer_styles)
+-                    .build()
+-                    .finish(),
+-            )
+-            .with_child(
+-                ui_builder
+-                    .link(
+-                        "Log in".into(),
+-                        None,
+-                        Some(Box::new(|ctx| {
+-                            ctx.dispatch_typed_action(IntroSlideAction::LoginClicked);
+-                        })),
+-                        self.login_mouse_state.clone(),
+-                    )
+-                    .soft_wrap(false)
+-                    .with_style(UiComponentStyles {
+-                        font_size: Some(12.),
+-                        ..Default::default()
+-                    })
+-                    .build()
+-                    .finish(),
+-            )
+-            .finish();
+-
+-        let mut stack = Stack::new();
+-        stack.add_child(centered);
+-        stack.add_positioned_child(
+-            login_row,
+-            OffsetPositioning::offset_from_parent(
+-                vec2f(0., -28.),
+-                ParentOffsetBounds::ParentBySize,
+-                ParentAnchor::BottomMiddle,
+-                ChildAnchor::BottomMiddle,
+-            ),
+-        );
+-        stack.finish()
++        centered
+     }
+ }
+ 
+@@ -208,10 +149,6 @@ impl TypedActionView for IntroSlide {
+             IntroSlideAction::GetStartedClicked => {
+                 self.get_started_clicked(ctx);
+             }
+-            IntroSlideAction::LoginClicked => {
+-                send_telemetry_from_ctx!(OnboardingEvent::WelcomeLoginClicked, ctx);
+-                ctx.emit(IntroSlideEvent::LoginRequested);
+-            }
+         }
+     }
+ }
+diff --git a/crates/onboarding/src/slides/mod.rs b/crates/onboarding/src/slides/mod.rs
+index 24498984..7afad3b8 100644
+--- a/crates/onboarding/src/slides/mod.rs
++++ b/crates/onboarding/src/slides/mod.rs
+@@ -21,7 +21,7 @@ pub use bottom_nav::onboarding_bottom_nav;
+ pub use customize_slide::CustomizeUISlide;
+ pub use free_user_no_ai_slide::FreeUserNoAiSlide;
+ pub use intention_slide::IntentionSlide;
+-pub use intro_slide::{IntroSlide, IntroSlideEvent};
++pub use intro_slide::IntroSlide;
+ pub use onboarding_slide::OnboardingSlide;
+ pub use project_slide::{ProjectOnboardingSettings, ProjectSlide};
+ pub use theme_picker_slide::{ThemePickerSlide, ThemePickerSlideEvent};
+diff --git a/script/local-only/verify b/script/local-only/verify
+index 6221c3c9..1d11228e 100755
+--- a/script/local-only/verify
++++ b/script/local-only/verify
+@@ -62,6 +62,8 @@ REQUIRED_REGEX='(api key|API key|ApiKey|base_url|Base URL|base URL|custom endpoi
+ SCAN_TARGETS=("app/src" "crates" "Cargo.toml" "app/Cargo.toml")
+ AUTH_ACCOUNT_TARGETS=("app/src/auth" "app/src/root_view.rs" "app/src/workspace/global_actions.rs" "app/src/app_menus.rs" "app/src/lib.rs")
+ AUTH_ACCOUNT_FORBIDDEN_REGEX='(createAnonymousUser|create_anonymous_user|debug_create_anonymous_user|workspace:debug_create_anonymous_user|Authenticating via API key|WARP_USER_SECRET|PersistedUser::from_secure_storage|/signup/remote|/login/remote|/upgrade\?|/login_options/|/link_sso|UserInitiatedLogOut|LogOutModalShown|LoggedOutStartup|determine_and_report)'
++ONBOARDING_WELCOME_LOGIN_TARGET="crates/onboarding/src/slides/intro_slide.rs"
++ONBOARDING_WELCOME_LOGIN_FORBIDDEN_REGEX='(Already have an account\?|"Log in"|IntroSlideEvent|LoginClicked|LoginRequested|WelcomeLoginClicked)'
+ 
+ scan_forbidden() {
+   local scan_root="$1"
+@@ -139,6 +141,32 @@ scan_auth_account_forbidden() {
+   esac
+ }
+ 
++scan_onboarding_welcome_login_forbidden() {
++  local scan_root="$1"
++  local target="$scan_root/$ONBOARDING_WELCOME_LOGIN_TARGET"
++
++  if [[ ! -e "$target" ]]; then
++    echo "No onboarding welcome login target exists at $target"
++    return 0
++  fi
++
++  local rg_status
++  rg_status=0
++  rg -n --hidden --glob '!target/**' --glob '!.git/**' "$ONBOARDING_WELCOME_LOGIN_FORBIDDEN_REGEX" "$target" || rg_status="$?"
++
++  case "$rg_status" in
++    0)
++      return 1
++      ;;
++    1)
++      return 0
++      ;;
++    *)
++      local_only_die "ripgrep onboarding welcome login scan failed with status $rg_status"
++      ;;
++  esac
++}
++
+ run_self_test() {
+   local_only_print_header "Running verifier self-test"
+   local tmp
+@@ -183,6 +211,23 @@ AUTH_FAIL_FIXTURE
+     local_only_die "self-test auth/account fail fixture was not reported as forbidden"
+   fi
+ 
++  mkdir -p "$tmp/crates/onboarding/src/slides"
++  cat > "$tmp/crates/onboarding/src/slides/intro_slide.rs" <<'ONBOARDING_PASS_FIXTURE'
++pub const WELCOME_TEXT: &str = "Welcome to Warp";
++ONBOARDING_PASS_FIXTURE
++
++  if ! scan_onboarding_welcome_login_forbidden "$tmp"; then
++    local_only_die "self-test onboarding welcome login scan reported clean fixture as forbidden"
++  fi
++
++  cat > "$tmp/crates/onboarding/src/slides/intro_slide.rs" <<'ONBOARDING_FAIL_FIXTURE'
++pub const LOGIN_PROMPT: &str = "Already have an account? Log in";
++ONBOARDING_FAIL_FIXTURE
++
++  if scan_onboarding_welcome_login_forbidden "$tmp"; then
++    local_only_die "self-test onboarding welcome login fail fixture was not reported as forbidden"
++  fi
++
+   if ! scan_required_ai_config "$tmp"; then
+     local_only_die "self-test AI config fixture was not detected"
+   fi
+@@ -207,6 +252,11 @@ if [[ "$RUN_STATIC" == true ]]; then
+     local_only_die "forbidden auth/account entry points remain"
+   fi
+ 
++  local_only_print_header "Scanning onboarding welcome login prompt"
++  if ! scan_onboarding_welcome_login_forbidden "$ROOT"; then
++    local_only_die "onboarding welcome login prompt remains"
++  fi
++
+   local_only_print_header "Scanning for forbidden cloud/account surfaces"
+   if ! scan_forbidden "$ROOT" "${SCAN_TARGETS[@]}"; then
+     local_only_die "forbidden cloud/account surfaces remain"
+-- 
+2.53.0
+
