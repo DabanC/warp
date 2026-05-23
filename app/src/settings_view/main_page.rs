@@ -7,28 +7,21 @@ use super::{
     },
     SettingsAction, SettingsSection, ToggleSettingActionPair,
 };
-use crate::auth::{AuthStateProvider, UserUid};
+use crate::auth::AuthStateProvider;
 use crate::autoupdate::{self, AutoupdateStage, AutoupdateState};
 use crate::send_telemetry_from_ctx;
-use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::{
-    appearance::Appearance,
-    auth::{auth_state::AuthState, auth_view_modal::AuthViewVariant},
-    report_if_error,
-    settings::cloud_preferences::CloudPreferencesSettings,
-    TelemetryEvent,
+    appearance::Appearance, auth::auth_state::AuthState, report_if_error,
+    settings::cloud_preferences::CloudPreferencesSettings, TelemetryEvent,
 };
-use crate::{auth::auth_manager::AuthManager, server::ids::ServerId};
-use crate::{auth::auth_manager::LoginGatedFeature, workspaces::workspace::CustomerType};
 use crate::{workspace::WorkspaceAction, workspaces::update_manager::TeamUpdateManager};
 use ::settings::{Setting, ToggleableSetting};
 use lazy_static::lazy_static;
 use pathfinder_color::ColorU;
-use pathfinder_geometry::vector::vec2f;
 use std::sync::{Arc, Mutex};
 use warp_core::features::FeatureFlag;
-use warp_core::ui::icons::Icon;
 use warp_core::{channel::ChannelState, context_flag::ContextFlag};
+use warpui::keymap::ContextPredicate;
 use warpui::{
     assets::asset_cache::AssetSource,
     elements::{Border, Empty, MainAxisAlignment, MainAxisSize},
@@ -45,18 +38,13 @@ use warpui::{
 };
 use warpui::{
     elements::{CacheOption, Image},
-    ui_components::{
-        button::{ButtonVariant, TextAndIcon, TextAndIconAlignment},
-        components::{Coords, UiComponent, UiComponentStyles},
-    },
+    ui_components::components::{UiComponent, UiComponentStyles},
 };
-use warpui::{fonts::Weight, keymap::ContextPredicate};
 use warpui::{
     Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
 };
 
 const PHOTO_SIZE: f32 = 40.;
-const REFERRAL_CTA: &str = "Earn rewards by sharing Warp with friends & colleagues";
 const REGULAR_TEXT_FONT_SIZE: f32 = 12.;
 const VERTICAL_MARGIN: f32 = 24.;
 lazy_static! {
@@ -122,37 +110,7 @@ pub enum MainPageAction {
     DownloadUpdate,
     CheckForUpdate,
     ToggleSettingsSync,
-    Upgrade {
-        team_uid: Option<ServerId>,
-        user_id: UserUid,
-    },
-    GenerateStripeBillingPortalLink {
-        team_uid: ServerId,
-    },
-    SignupAnonymousUser,
     OpenUrl(String),
-}
-
-impl MainPageAction {
-    fn blocked_for_anonymous_user(&self) -> bool {
-        use MainPageAction::*;
-        matches!(
-            self,
-            Upgrade { .. } | GenerateStripeBillingPortalLink { .. } | ToggleSettingsSync,
-        )
-    }
-}
-
-impl From<&MainPageAction> for LoginGatedFeature {
-    fn from(val: &MainPageAction) -> LoginGatedFeature {
-        use MainPageAction::*;
-        match val {
-            Upgrade { .. } => "Upgrade Plan",
-            GenerateStripeBillingPortalLink { .. } => "Generate Stripe Billing Portal Link",
-            ToggleSettingsSync => "Toggle Settings Sync",
-            _ => "Unknown reason",
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -160,7 +118,6 @@ pub enum MainSettingsPageEvent {
     CheckForUpdate,
     #[allow(dead_code)]
     OpenWarpDrive,
-    SignupAnonymousUser,
 }
 
 pub struct MainSettingsPageView {
@@ -176,22 +133,6 @@ impl TypedActionView for MainSettingsPageView {
     type Action = MainPageAction;
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
-        // Block anonymous users from upgrading
-        if AuthStateProvider::as_ref(ctx)
-            .get()
-            .is_anonymous_or_logged_out()
-            && action.blocked_for_anonymous_user()
-        {
-            AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-                auth_manager.attempt_login_gated_feature(
-                    action.into(),
-                    AuthViewVariant::RequireLoginCloseable,
-                    ctx,
-                )
-            });
-            return;
-        }
-
         match action {
             MainPageAction::Relaunch => {
                 autoupdate::initiate_relaunch_for_update(ctx);
@@ -218,22 +159,6 @@ impl TypedActionView for MainSettingsPageView {
                     ctx
                 );
                 ctx.notify();
-            }
-            MainPageAction::Upgrade { team_uid, user_id } => match team_uid {
-                Some(team_uid) => {
-                    ctx.open_url(&UserWorkspaces::upgrade_link_for_team(*team_uid));
-                }
-                None => {
-                    ctx.open_url(&UserWorkspaces::upgrade_link(*user_id));
-                }
-            },
-            MainPageAction::GenerateStripeBillingPortalLink { team_uid } => {
-                UserWorkspaces::handle(ctx).update(ctx, |user_workspaces, ctx| {
-                    user_workspaces.generate_stripe_billing_portal_link(*team_uid, ctx);
-                });
-            }
-            MainPageAction::SignupAnonymousUser => {
-                ctx.emit(MainSettingsPageEvent::SignupAnonymousUser);
             }
             MainPageAction::OpenUrl(url) => {
                 ctx.open_url(url);
@@ -266,19 +191,12 @@ impl MainSettingsPageView {
             ctx.notify();
         });
 
-        let auth_manager_handle = AuthManager::handle(ctx);
-        ctx.subscribe_to_model(&auth_manager_handle, |_, _, _, ctx| {
-            ctx.notify();
-        });
-
         let mut widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
             Box::new(AccountWidget::default()),
             Box::new(DividerWidget {}),
         ];
 
         widgets.push(Box::new(SettingsSyncWidget::default()));
-
-        widgets.push(Box::new(EarnRewardsWidget::default()));
 
         if ChannelState::app_version().is_some() {
             widgets.push(Box::new(VersionInfoWidget::default()));
@@ -299,17 +217,7 @@ impl MainSettingsPageView {
 }
 
 #[derive(Default)]
-struct AccountWidgetStateHandles {
-    upgrade_link: MouseStateHandle,
-    anonymous_user_sign_up_button: MouseStateHandle,
-    enterprise_contact_us_link: MouseStateHandle,
-    stripe_billing_portal_link: MouseStateHandle,
-}
-
-#[derive(Default)]
-struct AccountWidget {
-    ui_state_handles: AccountWidgetStateHandles,
-}
+struct AccountWidget;
 
 impl AccountWidget {
     fn render_anonymous_account_info(
@@ -317,70 +225,33 @@ impl AccountWidget {
         auth_state: &AuthState,
         appearance: &Appearance,
     ) -> Box<dyn Element> {
-        let button_styles = UiComponentStyles {
-            font_size: Some(14.),
-            font_weight: Some(Weight::Semibold),
-            border_radius: Some(CornerRadius::with_all(Radius::Pixels(4.))),
-            padding: Some(Coords {
-                top: 12.,
-                bottom: 12.,
-                left: 40.,
-                right: 40.,
-            }),
-            ..Default::default()
-        };
-
-        let user_info = appearance
-            .ui_builder()
-            .button(
-                ButtonVariant::Accent,
-                self.ui_state_handles.anonymous_user_sign_up_button.clone(),
-            )
-            .with_style(button_styles)
-            .with_text_label("Sign up".to_owned())
-            .build()
-            .on_click(move |ctx, _, _| {
-                ctx.dispatch_typed_action(MainPageAction::SignupAnonymousUser);
-            })
+        let user_info = Text::new_inline("Local-only identity", appearance.ui_font_family(), 16.)
+            .with_color(appearance.theme().active_ui_text_color().into())
             .finish();
 
         let mut plan_info = Flex::column()
             .with_main_axis_alignment(MainAxisAlignment::SpaceEvenly)
             .with_cross_axis_alignment(CrossAxisAlignment::End);
-        let current_user_id = auth_state.user_id().unwrap_or_default();
 
-        plan_info.add_child(render_customer_type_badge(appearance, "Free".into()));
-        plan_info.add_child(
-            Container::new(
-                appearance
-                    .ui_builder()
-                    .button(
-                        ButtonVariant::Link,
-                        self.ui_state_handles.upgrade_link.clone(),
-                    )
-                    .with_text_and_icon_label(
-                        TextAndIcon::new(
-                            TextAndIconAlignment::IconFirst,
-                            "Compare plans",
-                            Icon::CoinsStacked.to_warpui_icon(appearance.theme().accent()),
-                            MainAxisSize::Min,
-                            MainAxisAlignment::Center,
-                            vec2f(14., 14.),
-                        )
-                        .with_inner_padding(4.),
-                    )
-                    .build()
-                    .on_click(move |ctx, _, _| {
-                        ctx.dispatch_typed_action(MainPageAction::Upgrade {
-                            team_uid: None,
-                            user_id: current_user_id,
-                        });
-                    })
-                    .finish(),
-            )
-            .with_margin_top(8.)
-            .finish(),
-        );
+        plan_info.add_child(render_customer_type_badge(appearance, "Local".into()));
+
+        if let Some(user_id) = auth_state.user_id() {
+            plan_info.add_child(
+                Text::new_inline(
+                    user_id.as_str(),
+                    appearance.ui_font_family(),
+                    REGULAR_TEXT_FONT_SIZE,
+                )
+                .with_color(
+                    appearance
+                        .theme()
+                        .active_ui_text_color()
+                        .with_opacity(60)
+                        .into(),
+                )
+                .finish(),
+            );
+        }
 
         Flex::row()
             .with_child(
@@ -479,111 +350,23 @@ impl AccountWidget {
         let mut plan_info = Flex::column()
             .with_main_axis_alignment(MainAxisAlignment::SpaceEvenly)
             .with_cross_axis_alignment(CrossAxisAlignment::End);
-        let current_user_id = auth_state.user_id().unwrap_or_default();
-        let workspaces = UserWorkspaces::as_ref(app);
-        if let Some(team) = workspaces.current_team() {
-            if team.billing_metadata.customer_type != CustomerType::Unknown {
-                plan_info.add_child(render_customer_type_badge(
-                    appearance,
-                    team.billing_metadata.customer_type.to_display_string(),
-                ));
-            }
+        plan_info.add_child(render_customer_type_badge(appearance, "Local".into()));
 
-            let current_user_email = auth_state.user_email().unwrap_or_default();
-            let has_admin_permissions = team.has_admin_permissions(&current_user_email);
-            if has_admin_permissions {
-                if team.billing_metadata.customer_type == CustomerType::Enterprise {
-                    plan_info.add_child(
-                        appearance
-                            .ui_builder()
-                            .link(
-                                "Contact support".into(),
-                                Some("mailto:support@warp.dev".into()),
-                                None,
-                                self.ui_state_handles.enterprise_contact_us_link.clone(),
-                            )
-                            .soft_wrap(false)
-                            .build()
-                            .with_margin_top(8.)
-                            .finish(),
-                    );
-                } else {
-                    if team.has_billing_history {
-                        let team_uid = team.uid;
-                        plan_info.add_child(
-                            appearance
-                                .ui_builder()
-                                .link(
-                                    "Manage billing".into(),
-                                    None,
-                                    Some(Box::new(move |ctx| {
-                                        ctx.dispatch_typed_action(
-                                            MainPageAction::GenerateStripeBillingPortalLink {
-                                                team_uid,
-                                            },
-                                        );
-                                    })),
-                                    self.ui_state_handles.stripe_billing_portal_link.clone(),
-                                )
-                                .soft_wrap(false)
-                                .build()
-                                .with_margin_top(8.)
-                                .finish(),
-                        );
-                    }
-
-                    // If the team is upgradeable to self-serve tier, show them the upgrade link.
-                    if team.billing_metadata.can_upgrade_to_higher_tier_plan() {
-                        let description = match team.billing_metadata.customer_type {
-                            CustomerType::Prosumer => "Upgrade to Turbo plan",
-                            CustomerType::Turbo => "Upgrade to Lightspeed plan",
-                            _ => "Compare plans",
-                        };
-                        let team_uid = team.uid;
-                        plan_info.add_child(
-                            appearance
-                                .ui_builder()
-                                .link(
-                                    description.into(),
-                                    None,
-                                    Some(Box::new(move |ctx| {
-                                        ctx.dispatch_typed_action(MainPageAction::Upgrade {
-                                            team_uid: Some(team_uid),
-                                            user_id: current_user_id,
-                                        });
-                                    })),
-                                    self.ui_state_handles.upgrade_link.clone(),
-                                )
-                                .soft_wrap(false)
-                                .build()
-                                .with_margin_top(8.)
-                                .finish(),
-                        );
-                    }
-                }
-            }
-        } else {
-            let plan_badge_child = render_customer_type_badge(appearance, "Free".into());
-            plan_info.add_child(plan_badge_child);
-
+        if let Some(user_id) = auth_state.user_id() {
             plan_info.add_child(
-                appearance
-                    .ui_builder()
-                    .link(
-                        "Compare plans".into(),
-                        None,
-                        Some(Box::new(move |ctx| {
-                            ctx.dispatch_typed_action(MainPageAction::Upgrade {
-                                team_uid: None,
-                                user_id: current_user_id,
-                            });
-                        })),
-                        self.ui_state_handles.upgrade_link.clone(),
-                    )
-                    .soft_wrap(false)
-                    .build()
-                    .with_margin_top(8.)
-                    .finish(),
+                Text::new_inline(
+                    user_id.as_str(),
+                    appearance.ui_font_family(),
+                    REGULAR_TEXT_FONT_SIZE,
+                )
+                .with_color(
+                    appearance
+                        .theme()
+                        .active_ui_text_color()
+                        .with_opacity(60)
+                        .into(),
+                )
+                .finish(),
             );
         }
 
@@ -605,7 +388,7 @@ impl SettingsWidget for AccountWidget {
     type View = MainSettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "account sign up"
+        "account local identity"
     }
 
     fn render(
@@ -717,85 +500,6 @@ impl SettingsWidget for SettingsSyncWidget {
                 .finish(),
             None,
         ))
-        .with_margin_top(VERTICAL_MARGIN)
-        .finish()
-    }
-}
-
-#[derive(Default)]
-struct EarnRewardsWidget {
-    refer_link_mouse_handle: MouseStateHandle,
-}
-
-impl EarnRewardsWidget {
-    fn render_row(
-        &self,
-        appearance: &Appearance,
-        label: &str,
-        right_child: Box<dyn Element>,
-    ) -> Box<dyn Element> {
-        Flex::row()
-            .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_child(
-                Shrinkable::new(
-                    1.0,
-                    Align::new(
-                        Text::new_inline(
-                            label.to_string(),
-                            appearance.ui_font_family(),
-                            REGULAR_TEXT_FONT_SIZE,
-                        )
-                        .with_color(appearance.theme().active_ui_text_color().into())
-                        .finish(),
-                    )
-                    .left()
-                    .finish(),
-                )
-                .finish(),
-            )
-            .with_child(right_child)
-            .finish()
-    }
-}
-
-impl SettingsWidget for EarnRewardsWidget {
-    type View = MainSettingsPageView;
-
-    fn search_terms(&self) -> &str {
-        "earn rewards referral share friends"
-    }
-
-    fn should_render(&self, app: &AppContext) -> bool {
-        !AuthStateProvider::as_ref(app)
-            .get()
-            .is_anonymous_or_logged_out()
-    }
-
-    fn render(
-        &self,
-        _view: &Self::View,
-        appearance: &Appearance,
-        _app: &AppContext,
-    ) -> Box<dyn Element> {
-        Container::new(
-            self.render_row(
-                appearance,
-                REFERRAL_CTA,
-                appearance
-                    .ui_builder()
-                    .link(
-                        "Refer a friend".into(),
-                        None,
-                        Some(Box::new(move |ctx| {
-                            ctx.dispatch_typed_action(WorkspaceAction::ShowReferralSettingsPage);
-                        })),
-                        self.refer_link_mouse_handle.clone(),
-                    )
-                    .soft_wrap(false)
-                    .build()
-                    .finish(),
-            ),
-        )
         .with_margin_top(VERTICAL_MARGIN)
         .finish()
     }

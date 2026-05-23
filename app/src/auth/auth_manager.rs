@@ -2,7 +2,6 @@ pub(super) mod user_persistence;
 
 use std::result::Result as StdResult;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use settings::Setting as _;
@@ -12,7 +11,7 @@ use warpui::{Entity, ModelContext, SingletonEntity, UpdateModel};
 
 use super::auth_state::{AuthState, PersistAction};
 use super::auth_view_modal::{AuthRedirectPayload, AuthViewVariant};
-use super::credentials::{Credentials, FirebaseToken, LoginToken};
+use super::credentials::Credentials;
 use super::user::User;
 use super::AuthStateProvider;
 use super::UserUid;
@@ -175,35 +174,10 @@ impl AuthManager {
         result: Result<oauth2::StandardDeviceAuthorizationResponse, UserAuthenticationError>,
         ctx: &mut ModelContext<Self>,
     ) {
-        match result {
-            Ok(details) => {
-                // Emit the device authorization details so that they can be shown to the user.
-                ctx.emit(AuthManagerEvent::ReceivedDeviceAuthorizationCode {
-                    verification_url: details.verification_uri().to_string(),
-                    verification_url_complete: details
-                        .verification_uri_complete()
-                        .map(|complete| complete.secret().to_string()),
-                    user_code: details.user_code().secret().to_string(),
-                });
-
-                let auth_client = self.auth_client.clone();
-                ctx.spawn(
-                    async move {
-                        // Wait for the user to approve the device authorization request.
-                        let token = auth_client
-                            .exchange_device_access_token(&details, Duration::from_secs(600))
-                            .await?;
-
-                        // Exchange the custom access token for Firebase auth tokens and fetch the user.
-                        auth_client
-                            .fetch_user(LoginToken::Firebase(token), false)
-                            .await
-                    },
-                    Self::on_user_fetched,
-                );
-            }
-            Err(err) => ctx.emit(AuthManagerEvent::AuthFailed(err)),
+        if let Err(err) = result {
+            ctx.emit(AuthManagerEvent::AuthFailed(err));
         }
+        log::info!("Ignoring Warp account device authorization callback in local-only build");
     }
 
     /// Callback for handling a successful fetch of a user from warp-server and Firebase.

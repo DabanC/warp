@@ -217,8 +217,6 @@ use crate::ui_components::avatar::{Avatar, AvatarContent, StatusElementTypes};
 use crate::ai::agent_conversations_model::AgentConversationsModelEvent;
 #[cfg(target_family = "wasm")]
 use crate::ai::conversation_details_panel::ConversationDetailsPanel;
-#[cfg(target_family = "wasm")]
-use crate::uri::browser_url_handler::{parse_current_url, update_browser_url};
 use crate::workflows::manager::WorkflowManager;
 use crate::workflows::workflow::Workflow;
 #[cfg(feature = "local_fs")]
@@ -8552,42 +8550,6 @@ impl Workspace {
             MenuItem::Separator,
         ]);
 
-        if self.auth_state.is_anonymous_or_logged_out() {
-            items.push(
-                MenuItemFields::new("Sign up")
-                    .with_on_select_action(WorkspaceAction::SignupAnonymousUser)
-                    .into_item(),
-            );
-        }
-
-        // Check if the user is on any paid plan to determine whether to show "Billing and Usage" or "Upgrade"
-        let is_on_paid_plan = UserWorkspaces::as_ref(app)
-            .current_workspace()
-            .map(|workspace| workspace.billing_metadata.is_user_on_paid_plan())
-            .unwrap_or(false);
-
-        if is_on_paid_plan {
-            items.push(
-                MenuItemFields::new("Billing and usage")
-                    .with_on_select_action(WorkspaceAction::ShowSettingsPage(
-                        SettingsSection::BillingAndUsage,
-                    ))
-                    .into_item(),
-            );
-        } else {
-            items.push(
-                MenuItemFields::new("Upgrade")
-                    .with_on_select_action(WorkspaceAction::ShowUpgrade)
-                    .into_item(),
-            );
-        }
-
-        items.push(
-            MenuItemFields::new("Invite a friend")
-                .with_on_select_action(WorkspaceAction::ShowReferralSettingsPage)
-                .into_item(),
-        );
-
         items
     }
 
@@ -9654,18 +9616,11 @@ impl Workspace {
             WorkflowModalEvent::ViewInWarpDrive(id) => {
                 self.view_in_and_focus_warp_drive(*id, ctx);
             }
-            WorkflowModalEvent::AiAssistUpgradeError(team_uid, user_id) => {
-                let upgrade_link = team_uid
-                    .map(UserWorkspaces::upgrade_link_for_team)
-                    .unwrap_or_else(|| UserWorkspaces::upgrade_link(*user_id));
-
+            WorkflowModalEvent::AiAssistUpgradeError(_team_uid, _user_id) => {
                 self.toast_stack.update(ctx, |view, ctx| {
-                    let new_toast =
-                        DismissibleToast::error("Looks like you're out of AI credits.".into())
-                            .with_link(
-                                ToastLink::new("Upgrade for more credits.".into())
-                                    .with_href(upgrade_link),
-                            );
+                    let new_toast = DismissibleToast::error(
+                        "Local-only AI usage is configured in AI settings.".into(),
+                    );
                     view.add_ephemeral_toast(new_toast, ctx);
                 });
             }
@@ -9941,8 +9896,11 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         match event {
-            AuthManagerEvent::AttemptedLoginGatedFeature { auth_view_variant } => {
-                self.open_require_login_modal(*auth_view_variant, ctx)
+            AuthManagerEvent::AttemptedLoginGatedFeature {
+                auth_view_variant: _,
+            } => {
+                log::info!("Ignoring login-gated feature auth prompt in local-only build");
+                ctx.notify();
             }
             AuthManagerEvent::LoginOverrideDetected(interrupted_auth_payload) => {
                 self.open_auth_override_warning_modal(interrupted_auth_payload.clone(), ctx);
@@ -13141,7 +13099,7 @@ impl Workspace {
                 ctx.notify();
             }
             SettingsViewEvent::SignupAnonymousUser => {
-                self.initiate_user_signup(AnonymousUserSignupEntrypoint::SignUpButton, ctx);
+                log::info!("Ignoring settings signup request in local-only build");
             }
             SettingsViewEvent::Pane(_) | SettingsViewEvent::StartResize => {}
             SettingsViewEvent::ShowToast { message, flavor } => {
@@ -14963,7 +14921,7 @@ impl Workspace {
                 self.open_suggested_rule_modal(rule_and_id, ctx);
             }
             pane_group::Event::AnonymousUserSignup => {
-                self.initiate_user_signup(AnonymousUserSignupEntrypoint::RenotificationBlock, ctx);
+                log::info!("Ignoring anonymous signup request in local-only build");
             }
             pane_group::Event::OpenDriveObjectShareDialog {
                 cloud_object_type_and_id,
@@ -15127,8 +15085,8 @@ impl Workspace {
                     toast_stack.add_ephemeral_toast(toast, ctx);
                 });
             }
-            pane_group::Event::SignupAnonymousUser { entrypoint } => {
-                self.initiate_user_signup(*entrypoint, ctx);
+            pane_group::Event::SignupAnonymousUser { entrypoint: _ } => {
+                log::info!("Ignoring pane signup request in local-only build");
             }
             pane_group::Event::OpenThemeChooser => {
                 self.show_theme_chooser_for_custom_theme(ctx);
@@ -18810,24 +18768,6 @@ impl Workspace {
             );
         }
 
-        if self.auth_state.is_anonymous_or_logged_out()
-            && !FeatureFlag::OpenWarpNewSettingsModes.is_enabled()
-        {
-            if is_web_anonymous_user {
-                target.add_child(
-                    Container::new(self.render_web_anonymous_user_sign_in_button(appearance))
-                        .with_margin_left(8.)
-                        .finish(),
-                );
-            } else {
-                target.add_child(
-                    Container::new(self.render_anonymous_sign_up_user_button(appearance))
-                        .with_margin_left(8.)
-                        .finish(),
-                );
-            }
-        }
-
         let zoom_factor = WindowSettings::as_ref(ctx).zoom_level.as_zoom_factor();
         let traffic_light_data = traffic_light_data(ctx, self.window_id);
         if let Some(traffic_light_data) = traffic_light_data.as_ref() {
@@ -19249,92 +19189,6 @@ impl Workspace {
         .finish()
     }
 
-    fn render_web_anonymous_user_sign_in_button(
-        &self,
-        appearance: &Appearance,
-    ) -> Box<dyn Element> {
-        let default_styles = UiComponentStyles {
-            font_color: Some(appearance.theme().active_ui_text_color().into()),
-            font_size: Some(12.),
-            font_weight: Some(Weight::Light),
-            font_family_id: Some(appearance.ui_font_family()),
-            border_color: None,
-            border_radius: Some(CornerRadius::with_all(Radius::Pixels(5.))),
-            border_width: Some(1.),
-            width: Some(80.),
-            height: Some(24.),
-            ..Default::default()
-        };
-        let hovered_styles = UiComponentStyles {
-            font_color: Some(appearance.theme().accent().into()),
-            border_color: Some(appearance.theme().accent().into()),
-            ..default_styles
-        };
-        let button = appearance
-            .ui_builder()
-            .button_with_custom_styles(
-                ButtonVariant::Text,
-                self.mouse_states.sign_in_button.clone(),
-                default_styles,
-                Some(hovered_styles),
-                Some(hovered_styles),
-                None,
-            )
-            .with_centered_text_label(String::from("Sign up"));
-
-        Align::new(
-            button
-                .build()
-                .on_click(|ctx, _, _| {
-                    ctx.dispatch_typed_action(WorkspaceAction::SignInAnonymousWebUser)
-                })
-                .finish(),
-        )
-        .finish()
-    }
-
-    fn render_anonymous_sign_up_user_button(&self, appearance: &Appearance) -> Box<dyn Element> {
-        let default_styles = UiComponentStyles {
-            font_color: Some(appearance.theme().active_ui_text_color().into()),
-            font_size: Some(12.),
-            font_weight: Some(Weight::Semibold),
-            font_family_id: Some(appearance.ui_font_family()),
-            border_color: Some(appearance.theme().active_ui_text_color().into()),
-            border_radius: Some(CornerRadius::with_all(Radius::Pixels(5.))),
-            border_width: Some(1.),
-            width: Some(80.),
-            height: Some(24.),
-            ..Default::default()
-        };
-        let hovered_styles = UiComponentStyles {
-            font_color: Some(appearance.theme().accent().into()),
-            border_color: Some(appearance.theme().accent().into()),
-            ..default_styles
-        };
-
-        let button = appearance
-            .ui_builder()
-            .button_with_custom_styles(
-                ButtonVariant::Text,
-                self.mouse_states.sign_up_button.clone(),
-                default_styles,
-                Some(hovered_styles),
-                Some(hovered_styles),
-                None,
-            )
-            .with_centered_text_label(String::from("Sign up"));
-
-        Align::new(
-            button
-                .build()
-                .on_click(|ctx, _, _| {
-                    ctx.dispatch_typed_action(WorkspaceAction::SignupAnonymousUser)
-                })
-                .finish(),
-        )
-        .finish()
-    }
-
     fn render_offline_button(&self, appearance: &Appearance) -> Box<dyn Element> {
         let ui_builder = appearance.ui_builder().clone();
 
@@ -19729,24 +19583,7 @@ impl Workspace {
     }
 
     fn render_reauth_banner_element(&self) -> Option<WorkspaceBannerFields> {
-        if self.reauth_banner_dismissed || !self.auth_state.needs_reauth() {
-            return None;
-        }
-
-        Some(WorkspaceBannerFields {
-            banner_type: WorkspaceBanner::Reauth,
-            severity: BannerSeverity::Warning,
-            heading: Some("Your login has expired.".into()),
-            description: "Please sign in again to restore access to cloud-based features.".into(),
-            secondary_button: None,
-            button: Some(WorkspaceBannerButtonDetails {
-                text: "Sign in".into(),
-                action: WorkspaceAction::Reauth,
-                variant: BannerButtonVariant::Outlined,
-                icon: None,
-                more_info_button_action: None,
-            }),
-        })
+        None
     }
 
     fn render_autoupdate_banner_element(&self, app: &AppContext) -> Option<WorkspaceBannerFields> {
@@ -20882,49 +20719,6 @@ impl Workspace {
         UserWorkspaces::as_ref(app).current_team_uid()
     }
 
-    fn initiate_user_signup(
-        &mut self,
-        entrypoint: AnonymousUserSignupEntrypoint,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        if self.auth_state.is_user_anonymous().unwrap_or_default() {
-            // User has a Firebase anonymous account — use the linking flow.
-            AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-                auth_manager.initiate_anonymous_user_linking(entrypoint, ctx);
-            });
-        } else {
-            // User is fully logged out (no Firebase user) — open the regular sign-up page.
-            AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-                let sign_up_url = auth_manager.sign_up_url();
-                ctx.open_url(&sign_up_url);
-            });
-        }
-        self.require_login_modal.update(ctx, |auth_modal, ctx| {
-            auth_modal.skip_to_browser_open_step(ctx);
-        });
-        self.open_require_login_modal(AuthViewVariant::RequireLoginCloseable, ctx);
-    }
-
-    fn redirect_to_sign_in(&mut self) {
-        #[cfg(target_family = "wasm")]
-        if let Some(current_url) = parse_current_url() {
-            update_browser_url(
-                Url::parse(&format!(
-                    "{}/login?redirect_to={}",
-                    ChannelState::server_root_url(),
-                    current_url.path()
-                ))
-                .ok(),
-                true,
-            );
-        } else {
-            update_browser_url(
-                Url::parse(&format!("{}/login", ChannelState::server_root_url())).ok(),
-                true,
-            );
-        }
-    }
-
     /// Triggers the necessary cleanup for when a user logs out.
     pub fn on_log_out(&mut self, ctx: &mut ViewContext<Self>) {
         // Logging out should mimic the same behaviour as closing a window.
@@ -21509,22 +21303,10 @@ impl TypedActionView for Workspace {
                 source,
             } => self.toggle_palette(*palette_mode, *source, ctx),
             ShowUpgrade => {
-                send_telemetry_from_ctx!(TelemetryEvent::UserMenuUpgradeClicked, ctx);
-
-                let auth_state = AuthStateProvider::as_ref(ctx).get();
-                let user_workspaces = UserWorkspaces::as_ref(ctx);
-
-                let upgrade_url = if let Some(team) = user_workspaces.current_team() {
-                    UserWorkspaces::upgrade_link_for_team(team.uid)
-                } else {
-                    let user_id = auth_state.user_id().unwrap_or_default();
-                    UserWorkspaces::upgrade_link(user_id)
-                };
-
-                ctx.open_url(&upgrade_url);
+                log::info!("Ignoring account upgrade action in local-only build");
             }
             ShowReferralSettingsPage => {
-                self.show_settings_with_section(Some(SettingsSection::Referrals), ctx);
+                log::info!("Ignoring referral settings action in local-only build");
             }
             JoinSlack => self.join_slack(ctx),
             ViewUserDocs => self.view_user_docs(ctx),
@@ -22231,17 +22013,13 @@ impl TypedActionView for Workspace {
                 send_telemetry_from_ctx!(TelemetryEvent::DisableInputSync, ctx);
             }
             Reauth => {
-                AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-                    let sign_in_url = auth_manager.sign_in_url();
-                    ctx.open_url(&sign_in_url);
-                });
-                send_telemetry_from_ctx!(TelemetryEvent::InitiateReauth, ctx);
+                log::info!("Ignoring reauth action in local-only build");
             }
             SignupAnonymousUser => {
-                self.initiate_user_signup(AnonymousUserSignupEntrypoint::SignUpButton, ctx);
+                log::info!("Ignoring signup action in local-only build");
             }
             SignInAnonymousWebUser => {
-                self.redirect_to_sign_in();
+                log::info!("Ignoring web signin action in local-only build");
             }
             HandleConflictingWorkflow(workflow_id) => {
                 self.toast_stack.update(ctx, |view, ctx| {

@@ -1632,9 +1632,6 @@ impl SettingsView {
     ) {
         match event {
             MainSettingsPageEvent::CheckForUpdate => ctx.emit(SettingsViewEvent::CheckForUpdate),
-            MainSettingsPageEvent::SignupAnonymousUser => {
-                ctx.emit(SettingsViewEvent::SignupAnonymousUser)
-            }
             _ => (),
         }
     }
