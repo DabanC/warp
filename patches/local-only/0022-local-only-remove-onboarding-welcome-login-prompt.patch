@@ -1,7 +1,7 @@
 From 79517647a58acaaf17cef9aa1ad2991533bf1797 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sat, 23 May 2026 23:23:44 +0800
-Subject: [PATCH 22/23] local-only: remove onboarding welcome login prompt
+Subject: [PATCH 22/24] local-only: remove onboarding welcome login prompt
 
 Remove the remaining welcome-screen login link so the local-only fork does not advertise Warp account sign-in during onboarding.
 ---

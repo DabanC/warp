@@ -21,3 +21,4 @@
 0021-local-only-clean-account-UI-removal-warnings.patch
 0022-local-only-remove-onboarding-welcome-login-prompt.patch
 0023-local-only-remove-remaining-cloud-subscription-UI.patch
+0024-local-only-hide-stale-Warp-Drive-and-Runs-panels.patch
