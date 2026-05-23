@@ -297,7 +297,7 @@ use crate::root_view::{
 pub use crate::server::telemetry::{
     AgentModeEntrypoint, AgentModeEntrypointSelectionType, TelemetryEvent,
 };
-use crate::server::telemetry::{AppStartupInfo, CloseTarget, PaletteSource, TelemetryCollector};
+use crate::server::telemetry::{CloseTarget, PaletteSource, TelemetryCollector};
 use crate::terminal::CustomSecretRegexUpdater;
 use crate::util::bindings::is_binding_cross_platform;
 use crate::workspace::{PaneViewLocator, Workspace, WorkspaceAction};
@@ -1336,13 +1336,8 @@ pub(crate) fn initialize_app(
 
     ctx.add_singleton_model(AntivirusInfo::new);
 
-    cfg_if::cfg_if! {
-        if #[cfg(feature = "crash_reporting")] {
-            let is_crash_reporting_enabled = crash_reporting::init(ctx);
-        } else {
-            let is_crash_reporting_enabled = false;
-        }
-    }
+    #[cfg(feature = "crash_reporting")]
+    crash_reporting::init(ctx);
     // Send buffered pre-init errors to Sentry now that the client is ready.
     #[cfg(feature = "crash_reporting")]
     for err in _pre_sentry_errors {
@@ -1450,63 +1445,17 @@ pub(crate) fn initialize_app(
     let user_is_logged_in = auth_state.is_logged_in();
 
     if user_is_logged_in {
-        // Skip refresh_user for CLI mode — the CLI handles auth refresh in
-        // ensure_auth_state so it can detect invalid credentials before running
-        // a command.
-        if !matches!(launch_mode, LaunchMode::CommandLine { .. }) {
-            AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-                auth_manager.refresh_user(ctx);
-            });
-        }
-
-        // Set the first frame callback to record the app's startup time.
-        // This is only sent for logged-in users so that new users don't skew performance metrics.
-        let is_screen_reader_enabled = ctx.is_screen_reader_enabled();
-        let from_relaunch = launch_mode.args().finish_update;
-        ctx.on_first_frame_drawn(move |ctx| {
-            let timing_data = IntervalTimer::handle(ctx).update(ctx, |timer, _| {
-                timer.mark_interval_end("FIRST_FRAME_DRAWN");
-                timer.compute_stats()
-            });
-            let event = TelemetryEvent::AppStartup(AppStartupInfo {
-                is_session_restoration_on: user_defaults_on_startup.should_restore_session,
-                is_screen_reader_enabled,
-                from_relaunch,
-                is_crash_reporting_enabled,
-                timing_data,
-            });
-
-            GPUState::handle(ctx).update(ctx, |gpu_state, ctx| {
-                gpu_state
-                    .set_has_lower_power_gpu(warpui::rendering::is_low_power_gpu_available(), ctx);
-            });
-
-            for window_id in ctx.window_ids().collect_vec() {
-                SettingsPaneManager::handle(ctx)
-                    .read(ctx, |model, _| model.settings_view(window_id))
-                    .update(ctx, |settings, ctx| {
-                        settings.refresh_preferred_graphics_backend_dropdown(ctx);
-                    })
-            }
-
-            send_telemetry_from_app_ctx!(event, ctx);
-        });
-
-        #[cfg(enable_crash_recovery)]
-        ctx.on_frame_drawn(|ctx, window_id| {
-            crash_recovery::CrashRecovery::handle(ctx).update(ctx, |crash_recovery, ctx| {
-                crash_recovery.on_frame_drawn(window_id, ctx);
-            });
-        })
+        log::info!("Local-only identity initialized; skipping Warp account refresh");
     } else {
-        // If the app was opened while logged out, record an event for measuring new users.
-        // This is sent immediately in case they quit the app on the signup screen.
-        send_telemetry_sync_from_app_ctx!(TelemetryEvent::LoggedOutStartup, ctx);
-        download_method::determine_and_report(
-            auth_state.clone(),
-            ctx.background_executor().clone(),
-        );
+        log::info!("No local identity found; continuing without Warp account reporting");
     }
+
+    #[cfg(enable_crash_recovery)]
+    ctx.on_frame_drawn(|ctx, window_id| {
+        crash_recovery::CrashRecovery::handle(ctx).update(ctx, |crash_recovery, ctx| {
+            crash_recovery.on_frame_drawn(window_id, ctx);
+        });
+    });
 
     #[cfg(not(target_family = "wasm"))]
     {
