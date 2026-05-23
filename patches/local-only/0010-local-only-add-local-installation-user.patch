@@ -1,0 +1,76 @@
+From 0a247c657299e3a5bf4b2a64591be442bbf60a0f Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Fri, 22 May 2026 02:01:42 +0800
+Subject: [PATCH 10/18] local-only: add local installation user
+
+---
+ app/src/auth/user.rs       | 19 +++++++++++++++++++
+ app/src/auth/user_tests.rs | 25 +++++++++++++++++++++++++
+ 2 files changed, 44 insertions(+)
+
+diff --git a/app/src/auth/user.rs b/app/src/auth/user.rs
+index 77f568c9..dfca483a 100644
+--- a/app/src/auth/user.rs
++++ b/app/src/auth/user.rs
+@@ -187,6 +187,25 @@ impl User {
+         }
+     }
+ 
++    pub fn local_installation(installation_id: uuid::Uuid) -> Self {
++        Self {
++            local_id: UserUid::new(&format!("local-installation-{installation_id}")),
++            metadata: UserMetadata {
++                email: "local@warp.local".to_string(),
++                display_name: Some("Local User".to_string()),
++                photo_url: None,
++            },
++            is_onboarded: true,
++            needs_sso_link: false,
++            anonymous_user_type: None,
++            is_on_work_domain: false,
++            linked_at: None,
++            personal_object_limits: None,
++            principal_type: PrincipalType::User,
++            global_skills: Vec::new(),
++        }
++    }
++
+     pub fn is_user_anonymous(&self) -> bool {
+         self.anonymous_user_type().is_some() && self.linked_at().is_none()
+     }
+diff --git a/app/src/auth/user_tests.rs b/app/src/auth/user_tests.rs
+index 5724215e..a2484d84 100644
+--- a/app/src/auth/user_tests.rs
++++ b/app/src/auth/user_tests.rs
+@@ -40,3 +40,28 @@ fn test_parse_user_profile() -> Result<()> {
+ fn test_user_global_skills_defaults_to_empty() {
+     assert_eq!(User::test().global_skills, Vec::<String>::new());
+ }
++
++#[test]
++fn test_local_installation_user_is_not_remote_or_anonymous() {
++    let installation_id = uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555")
++        .expect("valid uuid");
++
++    let user = User::local_installation(installation_id);
++
++    assert_eq!(
++        user.local_id.as_str(),
++        "local-installation-11111111-2222-3333-4444-555555555555"
++    );
++    assert_eq!(user.metadata.email, "local@warp.local");
++    assert_eq!(user.metadata.display_name.as_deref(), Some("Local User"));
++    assert_eq!(user.metadata.photo_url, None);
++    assert!(user.is_onboarded);
++    assert!(!user.needs_sso_link);
++    assert_eq!(user.anonymous_user_type, None);
++    assert!(!user.is_user_anonymous());
++    assert!(!user.is_on_work_domain);
++    assert_eq!(user.linked_at, None);
++    assert_eq!(user.personal_object_limits, None);
++    assert_eq!(user.principal_type, PrincipalType::User);
++    assert!(user.global_skills.is_empty());
++}
+-- 
+2.53.0
+

@@ -1,0 +1,370 @@
+From b4ca5c80327708ba5e8d879cca5d0599c8a98ad1 Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Sat, 23 May 2026 12:11:52 +0800
+Subject: [PATCH 14/18] local-only: start desktop without account prompts
+
+---
+ app/src/root_view.rs | 256 +++++++------------------------------------
+ 1 file changed, 37 insertions(+), 219 deletions(-)
+
+diff --git a/app/src/root_view.rs b/app/src/root_view.rs
+index 4372fdf4..1a6fa127 100644
+--- a/app/src/root_view.rs
++++ b/app/src/root_view.rs
+@@ -5,9 +5,9 @@ use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
+ use crate::auth::auth_override_warning_modal::AuthOverrideWarningModalVariant;
+ use crate::auth::auth_state::AuthState;
+ use crate::auth::auth_view_modal::AuthRedirectPayload;
+-use crate::auth::login_slide::{LoginSlideEvent, LoginSlideSource, LoginSlideView};
++use crate::auth::login_slide::{LoginSlideEvent, LoginSlideView};
+ use crate::auth::needs_sso_link_view::NeedsSsoLinkView;
+-use crate::auth::paste_auth_token_modal::{PasteAuthTokenModalEvent, PasteAuthTokenModalView};
++use crate::auth::paste_auth_token_modal::PasteAuthTokenModalView;
+ use crate::auth::{AuthStateProvider, LoginFailureReason};
+ use crate::autoupdate::{AutoupdateState, AutoupdateStateEvent};
+ use crate::cloud_object::model::persistence::CloudModel;
+@@ -25,7 +25,6 @@ use crate::settings::cloud_preferences_syncer::{
+     CloudPreferencesSyncer, CloudPreferencesSyncerEvent,
+ };
+ use crate::settings::AISettings;
+-use crate::workspace::tab_settings::TabSettings;
+ use onboarding::{
+     AgentOnboardingEvent, AgentOnboardingView, OnboardingIntention, SelectedSettings,
+ };
+@@ -59,7 +58,6 @@ use crate::window_settings::WindowSettings;
+ use crate::workspace::hoa_onboarding::mark_hoa_onboarding_completed;
+ use crate::workspace::WorkspaceAction;
+ use crate::workspaces::team_tester::TeamTesterStatus;
+-use crate::workspaces::update_manager::TeamUpdateManager;
+ use crate::workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent};
+ use crate::{
+     app_state::{AppState, PaneUuid, WindowSnapshot},
+@@ -1638,6 +1636,16 @@ pub struct RootView {
+ }
+ 
+ impl RootView {
++    fn should_show_local_onboarding(ctx: &AppContext) -> bool {
++        FeatureFlag::OpenWarpNewSettingsModes.is_enabled()
++            && FeatureFlag::AgentOnboarding.is_enabled()
++            && !has_completed_local_onboarding(ctx)
++    }
++
++    fn local_only_account_disabled_url() -> String {
++        "about:blank#local-only-account-disabled".to_string()
++    }
++
+     pub fn new(
+         global_resource_handles: GlobalResourceHandles,
+         workspace_setting: NewWorkspaceSource,
+@@ -1673,24 +1681,16 @@ impl RootView {
+             workspace_setting,
+         };
+ 
+-        let auth_onboarding_state = if auth_state.is_logged_in() {
+-            AuthOnboardingState::Terminal(workspace_args.create_workspace(ctx))
+-        } else {
++        let auth_onboarding_state = {
+             cfg_if! {
+                 if #[cfg(target_family = "wasm")] {
+-                    AuthOnboardingState::WebImport(AuthOnboardingTarget::Workspace(workspace_args.into()))
++                    if auth_state.is_logged_in() {
++                        AuthOnboardingState::Terminal(workspace_args.create_workspace(ctx))
++                    } else {
++                        AuthOnboardingState::WebImport(AuthOnboardingTarget::Workspace(workspace_args.into()))
++                    }
+                 } else {
+-                    // When OpenWarpNewSettingsModes is enabled, show onboarding before login for
+-                    // users who haven't completed it yet (tracked via a local UserPreferences key).
+-                    let has_completed_local_onboarding = FeatureFlag::OpenWarpNewSettingsModes.is_enabled()
+-                        && has_completed_local_onboarding(ctx);
+-                    let should_show_pre_login_onboarding = FeatureFlag::OpenWarpNewSettingsModes.is_enabled()
+-                        && FeatureFlag::AgentOnboarding.is_enabled()
+-                        && !has_completed_local_onboarding;
+-                    if FeatureFlag::ForceLogin.is_enabled() {
+-                        // ForceLogin is true for Preview
+-                        AuthOnboardingState::Auth(workspace_args.into())
+-                    } else if should_show_pre_login_onboarding {
++                    if Self::should_show_local_onboarding(ctx) {
+                         let workspace_args_box: Box<WorkspaceArgs> = workspace_args.into();
+                         let onboarding_view = Self::create_agent_onboarding_view(ctx);
+                         onboarding_view.update(ctx, |view, ctx| {
+@@ -1700,12 +1700,8 @@ impl RootView {
+                             onboarding_view,
+                             target: AuthOnboardingTarget::Workspace(workspace_args_box),
+                         }
+-                    } else if FeatureFlag::SkipFirebaseAnonymousUser.is_enabled() {
+-                        // When SkipFirebaseAnonymousUser is enabled, skip the login screen
+-                        // entirely and go directly into the workspace.
+-                        AuthOnboardingState::Terminal(workspace_args.create_workspace(ctx))
+                     } else {
+-                        AuthOnboardingState::Auth(workspace_args.into())
++                        AuthOnboardingState::Terminal(workspace_args.create_workspace(ctx))
+                     }
+                 }
+             }
+@@ -2044,12 +2040,7 @@ impl RootView {
+                         onboarding_view.set_auth_state(auth_state, ctx);
+                     });
+                     if matches!(event, AuthManagerEvent::AuthComplete) {
+-                        LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+-                            prefs.refresh_available_models(ctx);
+-                        });
+-                        TeamUpdateManager::handle(ctx).update(ctx, |manager, ctx| {
+-                            drop(manager.refresh_workspace_metadata(ctx));
+-                        });
++                        log::info!("Ignoring remote onboarding refresh in local-only build");
+                     }
+                 }
+             },
+@@ -2155,15 +2146,11 @@ impl RootView {
+                 });
+             }
+             AgentOnboardingEvent::OnboardingCompleted(selected_settings) => {
+-                let AuthOnboardingState::Onboarding {
+-                    target,
+-                    onboarding_view,
+-                } = &self.auth_onboarding_state
++                let AuthOnboardingState::Onboarding { target, .. } = &self.auth_onboarding_state
+                 else {
+                     return;
+                 };
+                 let target = target.clone();
+-                let onboarding_view = onboarding_view.clone();
+ 
+                 mark_local_onboarding_completed(ctx);
+                 if FeatureFlag::HOAOnboardingFlow.is_enabled() {
+@@ -2181,70 +2168,6 @@ impl RootView {
+                 }
+ 
+                 let is_logged_in = AuthStateProvider::as_ref(ctx).get().is_logged_in();
+-                // If the user isn't logged in, only require login if the applied
+-                // settings need an account (AI or Warp Drive enabled).
+-                let ai_enabled = selected_settings.is_ai_enabled();
+-                let warp_drive_enabled = selected_settings.is_warp_drive_enabled();
+-                // With old onboarding, we ask user to log in before onboarding, so don't do it after onboarding completes.
+-                let requires_login = !is_logged_in
+-                    && (ai_enabled || warp_drive_enabled)
+-                    && FeatureFlag::OpenWarpNewSettingsModes.is_enabled();
+-
+-                if requires_login {
+-                    let tutorial = OnboardingTutorial::from(selected_settings.clone());
+-                    self.pending_tutorial = Some(tutorial);
+-
+-                    let appearance = Appearance::as_ref(ctx);
+-                    let theme_name = appearance
+-                        .theme()
+-                        .name()
+-                        .unwrap_or_else(|| "Dark".to_string());
+-                    let (use_vertical_tabs, intention) = match selected_settings {
+-                        SelectedSettings::AgentDrivenDevelopment {
+-                            ui_customization, ..
+-                        } => (
+-                            ui_customization
+-                                .as_ref()
+-                                .map(|c| c.use_vertical_tabs)
+-                                .unwrap_or(true),
+-                            OnboardingIntention::AgentDrivenDevelopment,
+-                        ),
+-                        SelectedSettings::Terminal {
+-                            ui_customization, ..
+-                        } => (
+-                            ui_customization
+-                                .as_ref()
+-                                .map(|c| c.use_vertical_tabs)
+-                                .unwrap_or(false),
+-                            OnboardingIntention::Terminal,
+-                        ),
+-                    };
+-
+-                    let login_slide_view = ctx.add_typed_action_view(|ctx| {
+-                        LoginSlideView::new(
+-                            ai_enabled,
+-                            &theme_name,
+-                            use_vertical_tabs,
+-                            intention,
+-                            LoginSlideSource::OnboardingFlow,
+-                            ctx,
+-                        )
+-                    });
+-                    ctx.subscribe_to_view(&login_slide_view, |me, _view, event, ctx| {
+-                        me.handle_login_slide_event(event, ctx);
+-                    });
+-
+-                    self.pending_post_auth_onboarding_settings = Some(selected_settings.clone());
+-                    self.auth_onboarding_state = AuthOnboardingState::LoginSlide {
+-                        login_slide_view,
+-                        onboarding_view,
+-                        target,
+-                    };
+-                    ctx.emit(RootViewEvent::AuthOnboardingStateChanged);
+-                    self.focus(ctx);
+-                    ctx.notify();
+-                    return;
+-                }
+ 
+                 apply_onboarding_settings(selected_settings, ctx);
+ 
+@@ -2285,145 +2208,40 @@ impl RootView {
+                 ctx.notify();
+             }
+             AgentOnboardingEvent::UpgradeRequested => {
+-                let upgrade_url = AuthManager::handle(ctx)
+-                    .update(ctx, |auth_manager, _| auth_manager.upgrade_url());
+-                ctx.open_url(&upgrade_url);
++                ctx.open_url(&Self::local_only_account_disabled_url());
+             }
+             AgentOnboardingEvent::UpgradeCopyUrlRequested => {
+-                let upgrade_url = AuthManager::handle(ctx)
+-                    .update(ctx, |auth_manager, _| auth_manager.upgrade_url());
++                let disabled_url = Self::local_only_account_disabled_url();
+                 ctx.clipboard().write(ClipboardContent {
+-                    plain_text: upgrade_url.clone(),
+-                    paths: Some(vec![upgrade_url]),
++                    plain_text: disabled_url.clone(),
++                    paths: Some(vec![disabled_url]),
+                     ..Default::default()
+                 });
+             }
+             AgentOnboardingEvent::UpgradePasteTokenFromClipboardRequested => {
+-                let modal = ctx.add_typed_action_view(PasteAuthTokenModalView::new);
+-                ctx.subscribe_to_view(&modal, |me, _, event, ctx| match event {
+-                    PasteAuthTokenModalEvent::Cancelled => {
+-                        me.paste_auth_token_modal = None;
+-                        me.focus(ctx);
+-                        ctx.notify();
+-                    }
+-                });
+-                ctx.focus(&modal);
+-                self.paste_auth_token_modal = Some(modal);
+-                ctx.notify();
++                log::info!("Upgrade auth-token paste flow is disabled in local-only build");
+             }
+             AgentOnboardingEvent::PrivacySettingsFromTerminalThemeSlideRequested => {
+-                let AuthOnboardingState::Onboarding {
+-                    target,
+-                    onboarding_view,
+-                } = &self.auth_onboarding_state
+-                else {
+-                    return;
+-                };
+-                let target = target.clone();
+-                let onboarding_view = onboarding_view.clone();
+-
+-                // This event is only emitted from the terminal-intention theme
+-                // slide (the variant name encodes this). The terminal intention
+-                // disables AI once onboarding settings are applied, so treat AI
+-                // as disabled here — `AISettings::is_any_ai_enabled` still holds
+-                // the pre-onboarding / default value at this point and would
+-                // incorrectly surface the cloud-conversation toggle.
+-                let ai_enabled = false;
+-                let appearance = Appearance::as_ref(ctx);
+-                let theme_name = appearance
+-                    .theme()
+-                    .name()
+-                    .unwrap_or_else(|| "Dark".to_string());
+-                // Match the theme slide's image: read the onboarding view's in-progress
+-                // customization rather than the globally-applied TabSettings, which still
+-                // holds the user's pre-onboarding (or default) value until the flow
+-                // completes.
+-                let use_vertical_tabs = onboarding_view.as_ref(ctx).use_vertical_tabs(ctx);
+-
+-                // This event variant encodes that it was emitted from the
+-                // terminal-intention theme slide, so match its image here.
+-                let login_slide_view = ctx.add_typed_action_view(|ctx| {
+-                    LoginSlideView::new(
+-                        ai_enabled,
+-                        &theme_name,
+-                        use_vertical_tabs,
+-                        OnboardingIntention::Terminal,
+-                        LoginSlideSource::PrivacySettingsFromTerminalIntentionTheme,
+-                        ctx,
+-                    )
+-                });
+-                ctx.subscribe_to_view(&login_slide_view, |me, _view, event, ctx| {
+-                    me.handle_login_slide_event(event, ctx);
+-                });
+-
+-                self.auth_onboarding_state = AuthOnboardingState::LoginSlide {
+-                    login_slide_view,
+-                    onboarding_view,
+-                    target,
+-                };
+-                ctx.emit(RootViewEvent::AuthOnboardingStateChanged);
+-                self.focus(ctx);
+-                ctx.notify();
++                log::info!("Privacy-settings login slide is disabled in local-only build");
+             }
+             AgentOnboardingEvent::LoginFromWelcomeRequested => {
+-                let AuthOnboardingState::Onboarding {
+-                    target,
+-                    onboarding_view,
+-                } = &self.auth_onboarding_state
++                let AuthOnboardingState::Onboarding { target, .. } = &self.auth_onboarding_state
+                 else {
+                     return;
+                 };
+-                let target = target.clone();
+-                let onboarding_view = onboarding_view.clone();
+-
+-                let ai_enabled = AISettings::as_ref(ctx).is_any_ai_enabled(ctx);
+-                let appearance = Appearance::as_ref(ctx);
+-                let theme_name = appearance
+-                    .theme()
+-                    .name()
+-                    .unwrap_or_else(|| "Dark".to_string());
+-                let use_vertical_tabs = *TabSettings::as_ref(ctx).use_vertical_tabs;
+-
+-                // Open the sign-in URL in the browser for existing users.
+-                AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
+-                    let sign_in_url = auth_manager.sign_in_url();
+-                    ctx.open_url(&sign_in_url);
+-                });
+-
+-                let login_slide_view = ctx.add_typed_action_view(|ctx| {
+-                    LoginSlideView::new(
+-                        ai_enabled,
+-                        &theme_name,
+-                        use_vertical_tabs,
+-                        // Existing-user login from the welcome slide happens before the user
+-                        // picks an intention; default the visual to the agent intention panel.
+-                        OnboardingIntention::AgentDrivenDevelopment,
+-                        LoginSlideSource::LoginExistingUserFromWelcome,
+-                        ctx,
+-                    )
+-                });
+-                ctx.subscribe_to_view(&login_slide_view, |me, _view, event, ctx| {
+-                    me.handle_login_slide_event(event, ctx);
+-                });
+-
+-                self.auth_onboarding_state = AuthOnboardingState::LoginSlide {
+-                    login_slide_view,
+-                    onboarding_view,
+-                    target,
+-                };
++                mark_local_onboarding_completed(ctx);
++                if FeatureFlag::HOAOnboardingFlow.is_enabled() {
++                    mark_hoa_onboarding_completed(ctx);
++                }
++                let workspace = target.clone().to_workspace(ctx);
++                self.auth_onboarding_state = AuthOnboardingState::Terminal(workspace);
+                 ctx.emit(RootViewEvent::AuthOnboardingStateChanged);
++                self.start_autoupdate_polling(ctx);
+                 self.focus(ctx);
+                 ctx.notify();
+             }
+             AgentOnboardingEvent::AppBecameActive => {
+-                // fetch the models / workspace metadata when the user tabs/intents back
+-                // into the app during onboarding after potentially upgrading
+-                LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+-                    prefs.refresh_available_models(ctx);
+-                });
+-                TeamUpdateManager::handle(ctx).update(ctx, |manager, ctx| {
+-                    drop(manager.refresh_workspace_metadata(ctx));
+-                });
++                log::info!("Ignoring remote onboarding active refresh in local-only build");
+             }
+         }
+     }
+-- 
+2.53.0
+

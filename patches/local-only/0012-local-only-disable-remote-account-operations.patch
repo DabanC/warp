@@ -1,0 +1,794 @@
+From f37925ff8b7087eb1c9c23bc3d000884e4c0f047 Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Fri, 22 May 2026 03:04:16 +0800
+Subject: [PATCH 12/18] local-only: disable remote account operations
+
+---
+ app/src/auth/auth_manager.rs       | 300 ++++-------------------------
+ app/src/auth/auth_manager_tests.rs | 234 ++++++----------------
+ app/src/auth/auth_view_modal.rs    |  13 +-
+ app/src/auth/login_slide.rs        |  13 +-
+ 4 files changed, 100 insertions(+), 460 deletions(-)
+
+diff --git a/app/src/auth/auth_manager.rs b/app/src/auth/auth_manager.rs
+index 5566df09..6936a2c5 100644
+--- a/app/src/auth/auth_manager.rs
++++ b/app/src/auth/auth_manager.rs
+@@ -7,12 +7,8 @@ use std::time::Duration;
+ use anyhow::{anyhow, Result};
+ use settings::Setting as _;
+ use uuid::Uuid;
+-use warp_core::channel::ChannelState;
+ use warp_core::features::FeatureFlag;
+-use warp_graphql::mutations::create_anonymous_user::{
+-    AnonymousUserType, CreateAnonymousUserResult,
+-};
+-use warpui::{clipboard::ClipboardContent, Entity, ModelContext, SingletonEntity, UpdateModel};
++use warpui::{Entity, ModelContext, SingletonEntity, UpdateModel};
+ 
+ use super::auth_state::{AuthState, PersistAction};
+ use super::auth_view_modal::{AuthRedirectPayload, AuthViewVariant};
+@@ -29,11 +25,8 @@ use crate::server::cloud_objects::update_manager::UpdateManager;
+ use crate::server::server_api::auth::FetchUserResult;
+ use crate::server::server_api::ServerApiProvider;
+ use crate::server::{
+-    graphql::get_user_facing_error_message,
+     server_api::{
+-        auth::{
+-            AnonymousUserCreationError, AuthClient, MintCustomTokenError, UserAuthenticationError,
+-        },
++        auth::{AuthClient, MintCustomTokenError, UserAuthenticationError},
+         ServerApi,
+     },
+     telemetry::AnonymousUserSignupEntrypoint,
+@@ -43,15 +36,11 @@ use crate::settings::initializer::SettingsInitializer;
+ use crate::settings::PrivacySettings;
+ use crate::terminal::general_settings::GeneralSettings;
+ use crate::terminal::shared_session::manager::Manager as SharedSessionManager;
+-#[cfg(target_family = "wasm")]
+-use crate::uri::browser_url_handler::{parse_current_url, update_browser_url};
+ use crate::workspaces::team_tester::TeamTesterStatus;
+ use crate::{
+-    persistence, report_error, report_if_error, send_telemetry_from_ctx,
+-    send_telemetry_sync_from_ctx, GlobalResourceHandlesProvider, TelemetryEvent,
++    persistence, report_if_error, send_telemetry_from_ctx, GlobalResourceHandlesProvider,
++    TelemetryEvent,
+ };
+-#[cfg(target_family = "wasm")]
+-use url::Url;
+ use user_persistence::PersistedUser;
+ 
+ #[derive(Debug)]
+@@ -92,6 +81,8 @@ pub type LoginGatedFeature = &'static str;
+ 
+ type URLConstructorCallback = Box<dyn FnOnce(Option<&str>) -> String>;
+ 
++const LOCAL_ONLY_ACCOUNT_DISABLED_URL: &str = "about:blank#local-only-account-disabled";
++
+ /// AuthManager is a singleton model which manages the currently logged-in user's state.
+ /// If you need to access the state, use `AuthStateProvider`.
+ pub struct AuthManager {
+@@ -246,23 +237,9 @@ impl AuthManager {
+         );
+     }
+ 
+-    /// Refreshes the user's auth state using their existing credentials.
+-    pub fn refresh_user(&self, ctx: &mut ModelContext<Self>) {
+-        let Some(credentials) = self.auth_state.credentials() else {
+-            log::warn!("Attempted to refresh user without credentials");
+-            return;
+-        };
+-
+-        let Some(token) = credentials.login_token() else {
+-            log::info!("Attempted to refresh a user with no login token, skipping");
+-            return;
+-        };
+-
+-        let auth_client = self.auth_client.clone();
+-        let _ = ctx.spawn(
+-            async move { auth_client.fetch_user(token, true).await },
+-            Self::on_user_fetched,
+-        );
++    /// Local-only builds never refresh Warp account state from the server.
++    pub fn refresh_user(&self, _ctx: &mut ModelContext<Self>) {
++        log::info!("Skipping Warp account refresh in local-only build");
+     }
+ 
+     /// Authenticate asynchronously using the OAuth2 device authorization flow.
+@@ -270,16 +247,11 @@ impl AuthManager {
+     /// This is only used by the Warp CLI if running on a device that does not have the Warp app installed.
+     #[cfg_attr(target_family = "wasm", allow(dead_code))]
+     pub fn authorize_device(&self, ctx: &mut ModelContext<Self>) {
+-        // Clear any stale user state so old credentials don't interfere
+-        // with the fresh device auth flow.
+-        self.auth_state.set_credentials(None);
+-
+-        let auth_client = self.auth_client.clone();
+-        // Request a device code the user can enter in their browser.
+-        ctx.spawn(
+-            async move { auth_client.request_device_code().await },
+-            Self::on_device_code_received,
+-        );
++        ctx.emit(AuthManagerEvent::AuthFailed(
++            UserAuthenticationError::Unexpected(anyhow!(
++                "Warp account device authorization is disabled in the local-only build"
++            )),
++        ));
+     }
+ 
+     #[cfg_attr(target_family = "wasm", allow(dead_code))]
+@@ -570,137 +542,30 @@ impl AuthManager {
+         }
+     }
+ 
+-    pub fn create_anonymous_user(
+-        &self,
+-        referral_code: Option<String>,
+-        ctx: &mut ModelContext<Self>,
+-    ) {
+-        let anonymous_user_type = AnonymousUserType::NativeClientAnonymousUserFeatureGated;
+-
+-        let auth_client = self.auth_client.clone();
+-        let _ = ctx.spawn(
+-            async move {
+-                auth_client
+-                    .create_anonymous_user(referral_code, anonymous_user_type)
+-                    .await
+-            },
+-            Self::on_create_anonymous_user,
+-        );
+-    }
+-
+-    fn on_create_anonymous_user(
+-        &mut self,
+-        response: Result<CreateAnonymousUserResult>,
+-        ctx: &mut ModelContext<Self>,
+-    ) {
+-        let custom_token = match response {
+-            Ok(response_data) => match response_data {
+-                CreateAnonymousUserResult::CreateAnonymousUserOutput(output) => Ok(output.id_token),
+-                CreateAnonymousUserResult::UserFacingError(user_facing_error) => {
+-                    Err(AnonymousUserCreationError::UserFacingError(
+-                        get_user_facing_error_message(user_facing_error),
+-                    ))
+-                }
+-                CreateAnonymousUserResult::Unknown => Err(AnonymousUserCreationError::Unknown),
+-            },
+-            Err(_) => Err(AnonymousUserCreationError::CreationFailed),
+-        };
+-
+-        match custom_token {
+-            Ok(custom_token) => {
+-                // Exchange the custom token for an ID token.
+-                let auth_client = self.auth_client.clone();
+-                let _ = ctx.spawn(
+-                    async move {
+-                        auth_client
+-                            .fetch_user(
+-                                LoginToken::Firebase(FirebaseToken::Custom(custom_token)),
+-                                false, /* for_refresh */
+-                            )
+-                            .await
+-                    },
+-                    Self::on_user_fetched,
+-                );
+-            }
+-
+-            Err(err) => {
+-                report_error!(
+-                    anyhow!(err).context("Encountered an error trying to create anonymous users")
+-                );
+-                ctx.emit(AuthManagerEvent::CreateAnonymousUserFailed);
+-            }
+-        }
++    pub fn skip_remote_anonymous_user_creation(&self, ctx: &mut ModelContext<Self>) {
++        log::info!("Skipping Firebase anonymous-user creation in local-only build");
++        ctx.emit(AuthManagerEvent::SkippedLogin);
+     }
+ 
+     pub fn attempt_login_gated_feature(
+         &self,
+         feature: LoginGatedFeature,
+-        auth_view_variant: AuthViewVariant,
+-        ctx: &mut ModelContext<Self>,
++        _auth_view_variant: AuthViewVariant,
++        _ctx: &mut ModelContext<Self>,
+     ) {
+-        if self.auth_state.is_anonymous_or_logged_out() {
+-            send_telemetry_from_ctx!(
+-                TelemetryEvent::AnonymousUserAttemptLoginGatedFeature { feature },
+-                ctx
+-            );
+-            ctx.emit(AuthManagerEvent::AttemptedLoginGatedFeature { auth_view_variant });
+-        };
++        log::info!("Ignoring login-gated feature '{feature}' in local-only build");
+     }
+ 
+-    pub fn anonymous_user_hit_drive_object_limit(&self, ctx: &mut ModelContext<Self>) {
+-        if self.auth_state.is_anonymous_or_logged_out() {
+-            send_telemetry_from_ctx!(TelemetryEvent::AnonymousUserHitCloudObjectLimit, ctx);
+-            ctx.emit(AuthManagerEvent::AttemptedLoginGatedFeature {
+-                auth_view_variant: AuthViewVariant::HitDriveObjectLimitCloseable,
+-            });
+-        };
++    pub fn anonymous_user_hit_drive_object_limit(&self, _ctx: &mut ModelContext<Self>) {
++        log::info!("Ignoring anonymous-user object limit in local-only build");
+     }
+ 
+     pub fn initiate_anonymous_user_linking(
+         &self,
+-        entrypoint: AnonymousUserSignupEntrypoint,
+-        ctx: &mut ModelContext<Self>,
++        _entrypoint: AnonymousUserSignupEntrypoint,
++        _ctx: &mut ModelContext<Self>,
+     ) {
+-        let auth_client = self.auth_client.clone();
+-        let _ = ctx.spawn(
+-            async move { auth_client.fetch_new_custom_token().await },
+-            move |me, response, ctx| {
+-                let custom_token = me.auth_client.on_custom_token_fetched(response);
+-
+-                match custom_token {
+-                    Ok(custom_token) => {
+-                        // Send synchronously since this is an important event in the sign up funnel and we
+-                        // don't want to lose events if the user quits before the event queue is flushed.
+-                        send_telemetry_sync_from_ctx!(
+-                            TelemetryEvent::InitiateAnonymousUserSignup { entrypoint },
+-                            ctx
+-                        );
+-                        let login_options_url = me.login_options_url(&custom_token);
+-                        if cfg!(target_family = "wasm") {
+-                            #[cfg(target_family = "wasm")]
+-                            if let Some(current_url) = parse_current_url() {
+-                                update_browser_url(
+-                                    Url::parse(&format!(
+-                                        "{}?redirect_to={}",
+-                                        login_options_url,
+-                                        current_url.path()
+-                                    ))
+-                                    .ok(),
+-                                    true,
+-                                );
+-                            } else {
+-                                update_browser_url(Url::parse(&login_options_url).ok(), true);
+-                            }
+-                        } else {
+-                            ctx.open_url(&login_options_url);
+-                        }
+-                    }
+-                    Err(e) => {
+-                        ctx.emit(AuthManagerEvent::MintCustomTokenFailed(e));
+-                    }
+-                }
+-            },
+-        );
++        log::info!("Ignoring anonymous-user linking in local-only build");
+     }
+ 
+     // Opens a page in the web app and logs the user in using a customToken if they are an anonymous user.
+@@ -710,60 +575,12 @@ impl AuthManager {
+         ctx: &mut ModelContext<Self>,
+         construct_url: URLConstructorCallback,
+     ) {
+-        if !self.auth_state.is_user_anonymous().unwrap_or_default()
+-            || !self.auth_state.is_logged_in()
+-        {
+-            // Not an anonymous Firebase user, or fully logged out — open URL without token.
+-            let url: String = construct_url(None);
+-            ctx.open_url(&url);
+-            return;
+-        }
+-
+-        let auth_client = self.auth_client.clone();
+-        let _ = ctx.spawn(
+-            async move { auth_client.fetch_new_custom_token().await },
+-            move |me, response, ctx| {
+-                let custom_token = me.auth_client.on_custom_token_fetched(response);
+-                match custom_token {
+-                    Ok(custom_token) => {
+-                        let url: String = construct_url(Some(&custom_token));
+-                        ctx.open_url(&url);
+-                    }
+-                    Err(e) => {
+-                        report_error!(anyhow!(
+-                        "Failed to fetch custom token for authenticating anonymous user in browser: {e:?}"
+-                    ))
+-                }
+-                };
+-            },
+-        );
++        let url = construct_url(None);
++        ctx.open_url(&url);
+     }
+ 
+-    pub fn copy_anonymous_user_linking_url_to_clipboard(&self, ctx: &mut ModelContext<Self>) {
+-        if !self.auth_state.is_user_anonymous().unwrap_or_default() {
+-            return;
+-        }
+-        let auth_client = self.auth_client.clone();
+-        let _ = ctx.spawn(
+-            async move { auth_client.fetch_new_custom_token().await },
+-            move |me, response, ctx| {
+-                let custom_token = me.auth_client.on_custom_token_fetched(response);
+-
+-                match custom_token {
+-                    Ok(custom_token) => {
+-                        let login_options_url = me.login_options_url(&custom_token);
+-                        ctx.clipboard().write(ClipboardContent {
+-                            plain_text: login_options_url,
+-                            paths: None,
+-                            ..Default::default()
+-                        });
+-                    }
+-                    Err(e) => {
+-                        ctx.emit(AuthManagerEvent::MintCustomTokenFailed(e));
+-                    }
+-                };
+-            },
+-        );
++    pub fn copy_anonymous_user_linking_url_to_clipboard(&self, _ctx: &mut ModelContext<Self>) {
++        log::info!("Ignoring anonymous-user linking URL copy in local-only build");
+     }
+ 
+     /// Generates a unique state parameter for the authentication flow.
+@@ -774,56 +591,25 @@ impl AuthManager {
+     }
+ 
+     pub fn sign_up_url(&mut self) -> String {
+-        let state = self.generate_auth_state();
+-        format!(
+-            // TODO: we should probably be able to remove the public_beta flag
+-            "{}/signup/remote?scheme={}&state={}&public_beta=true",
+-            ChannelState::server_root_url(),
+-            ChannelState::url_scheme(),
+-            state,
+-        )
++        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
+     }
+ 
+     pub fn sign_in_url(&mut self) -> String {
+-        let state = self.generate_auth_state();
+-        format!(
+-            "{}/login/remote?scheme={}&state={}",
+-            ChannelState::server_root_url(),
+-            ChannelState::url_scheme(),
+-            state,
+-        )
++        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
+     }
+ 
+     /// The upgrade confirmation page will kick the user back to the app with a refresh token
+     /// if we send a `state` query param to /upgrade
+     pub fn upgrade_url(&mut self) -> String {
+-        let state = self.generate_auth_state();
+-        format!(
+-            "{}/upgrade?scheme={}&state={}",
+-            ChannelState::server_root_url(),
+-            ChannelState::url_scheme(),
+-            state,
+-        )
++        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
+     }
+ 
+-    pub fn login_options_url(&mut self, custom_token: &str) -> String {
+-        let state = self.generate_auth_state();
+-        format!(
+-            "{}/login_options/{}?state={}",
+-            ChannelState::server_root_url(),
+-            custom_token,
+-            state,
+-        )
++    pub fn login_options_url(&mut self, _custom_token: &str) -> String {
++        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
+     }
+ 
+-    pub fn link_sso_url(&mut self, email: &str) -> String {
+-        let state = self.generate_auth_state();
+-        format!(
+-            "{}/link_sso?email={}&state={}",
+-            ChannelState::server_root_url(),
+-            email,
+-            state,
+-        )
++    pub fn link_sso_url(&mut self, _email: &str) -> String {
++        LOCAL_ONLY_ACCOUNT_DISABLED_URL.to_string()
+     }
+ 
+     /// Validates and consumes the pending auth state token. Returns `true` if the
+@@ -853,21 +639,9 @@ impl AuthManager {
+         }
+     }
+ 
+-    /// Sets the user as onboarded both on the server and locally.
+-    /// This method:
+-    /// 1. Updates the server by calling set_user_is_onboarded
+-    /// 2. Updates the local auth state and persists the user data
++    /// Marks the local installation user as onboarded without contacting Warp servers.
+     pub fn set_user_onboarded(&self, ctx: &mut ModelContext<Self>) {
+-        // Update server
+-        let auth_client = self.auth_client.clone();
+-        let _ = ctx.spawn(
+-            async move { auth_client.set_user_is_onboarded().await },
+-            |_, _, _| {},
+-        );
+-
+-        // Update local auth state and persist
+         self.auth_state.set_is_onboarded(true);
+-
+         self.persist(ctx);
+     }
+ }
+diff --git a/app/src/auth/auth_manager_tests.rs b/app/src/auth/auth_manager_tests.rs
+index 5069fea1..30f9ae13 100644
+--- a/app/src/auth/auth_manager_tests.rs
++++ b/app/src/auth/auth_manager_tests.rs
+@@ -2,13 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
+ use std::sync::Arc;
+ 
+ use super::{AuthManager, AuthManagerEvent};
+-use crate::auth::{
+-    auth_view_modal::AuthRedirectPayload,
+-    credentials::{Credentials, RefreshToken},
+-    user::{FirebaseAuthTokens, TEST_USER_UID},
+-    AuthStateProvider, UserUid,
+-};
+-use crate::server::server_api::auth::UserAuthenticationError;
++use crate::auth::{auth_view_modal::AuthViewVariant, AuthStateProvider};
+ use crate::ServerApiProvider;
+ use warpui::{App, SingletonEntity};
+ 
+@@ -18,233 +12,119 @@ fn initialize_app(app: &mut App) {
+     app.add_singleton_model(AuthManager::new_for_test);
+ }
+ 
+-/// Subscribes to `AuthManager` events and returns a flag that becomes `true`
+-/// if an `AuthFailed(InvalidStateParameter)` event is observed.
+-fn track_invalid_state_failures(app: &mut App) -> Arc<AtomicBool> {
+-    let saw_invalid_state = Arc::new(AtomicBool::new(false));
+-    let saw_invalid_state_for_closure = saw_invalid_state.clone();
+-    app.update(|ctx| {
+-        ctx.subscribe_to_model(&AuthManager::handle(ctx), move |_, event, _| {
+-            if matches!(
+-                event,
+-                AuthManagerEvent::AuthFailed(UserAuthenticationError::InvalidStateParameter)
+-            ) {
+-                saw_invalid_state_for_closure.store(true, Ordering::Relaxed);
+-            }
+-        });
+-    });
+-    saw_invalid_state
+-}
+-
+-/// After a logged-in user successfully completes auth, pressing the browser's
+-/// "Take me to Warp" button a second time should silently drop the stale
+-/// redirect rather than surface an `InvalidStateParameter` error.
+ #[test]
+-fn test_duplicate_redirect_for_logged_in_user_is_silently_ignored() {
++fn refresh_user_does_not_fetch_remote_user() {
+     App::test((), |mut app| async move {
+         initialize_app(&mut app);
+ 
+-        // Fail immediately if we see InvalidStateParameter at any point.
+-        app.update(|ctx| {
+-            ctx.subscribe_to_model(&AuthManager::handle(ctx), move |_, event, _| {
+-                if matches!(
+-                    event,
+-                    AuthManagerEvent::AuthFailed(UserAuthenticationError::InvalidStateParameter)
+-                ) {
+-                    panic!("Test failed: Received InvalidStateParameter error");
+-                }
+-            });
+-        });
+-
+-        // Generate a state token and create the auth payload that we'll use for both calls.
+-        // The incoming user_uid matches the default test user so the stale second redirect
+-        // qualifies for the silent-ignore branch.
+-        let auth_payload = AuthManager::handle(&app).update(&mut app, |auth_manager, _ctx| {
+-            let state = auth_manager.generate_auth_state();
+-
+-            AuthRedirectPayload {
+-                refresh_token: RefreshToken::new("test_refresh_token"),
+-                user_uid: Some(UserUid::new(TEST_USER_UID)),
+-                deleted_anonymous_user: Some(false),
+-                state: Some(state),
+-            }
+-        });
+-
+-        // First call: state validates and is consumed.
+-        AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+-            auth_manager.initialize_user_from_auth_payload(auth_payload.clone(), true, ctx);
+-        });
+-
+-        // The CSRF token must be single-use: successful validation clears it.
+-        AuthManager::handle(&app).update(&mut app, |auth_manager, _ctx| {
+-            assert!(
+-                auth_manager.pending_auth_state.is_none(),
+-                "pending_auth_state should be cleared after successful validation"
+-            );
+-        });
+-
+-        // Second call with the same (now-consumed) state: the user is already
+-        // logged in as the test user and the incoming user_uid matches, so we
+-        // must silently drop the redirect without emitting any AuthFailed event.
+         AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+-            auth_manager.initialize_user_from_auth_payload(auth_payload, true, ctx);
++            auth_manager.refresh_user(ctx);
+         });
+     });
+ }
+ 
+-/// When the user is fully logged out, a redirect carrying a state that does
+-/// not match the pending token must surface an `InvalidStateParameter` error.
+ #[test]
+-fn test_stale_state_when_logged_out_emits_invalid_state_parameter() {
++fn skip_remote_anonymous_user_creation_emits_skipped_login() {
+     App::test((), |mut app| async move {
+         initialize_app(&mut app);
+ 
+-        // Clear the default test user so we're fully logged out.
+-        app.update(|ctx| {
+-            let auth_state = AuthStateProvider::as_ref(ctx).get();
+-            auth_state.set_user(None);
+-            auth_state.set_credentials(None);
+-        });
++        let saw_skipped_login = Arc::new(AtomicBool::new(false));
++        let saw_skipped_login_for_closure = saw_skipped_login.clone();
+ 
+-        let saw_invalid_state = track_invalid_state_failures(&mut app);
+-
+-        // Generate a real pending state, then deliver a redirect whose state
+-        // doesn't match it.
+-        AuthManager::handle(&app).update(&mut app, |auth_manager, _ctx| {
+-            let _known_state = auth_manager.generate_auth_state();
++        app.update(|ctx| {
++            ctx.subscribe_to_model(&AuthManager::handle(ctx), move |_, event, _| {
++                if matches!(event, AuthManagerEvent::SkippedLogin) {
++                    saw_skipped_login_for_closure.store(true, Ordering::Relaxed);
++                }
++            });
+         });
+ 
+-        let bogus_payload = AuthRedirectPayload {
+-            refresh_token: RefreshToken::new("test_refresh_token"),
+-            user_uid: Some(UserUid::new("some_user_uid")),
+-            deleted_anonymous_user: Some(false),
+-            state: Some("not_the_real_state".to_owned()),
+-        };
+-
+         AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+-            auth_manager.initialize_user_from_auth_payload(bogus_payload, true, ctx);
++            auth_manager.skip_remote_anonymous_user_creation(ctx);
+         });
+ 
+         assert!(
+-            saw_invalid_state.load(Ordering::Relaxed),
+-            "expected AuthFailed(InvalidStateParameter) when logged out and state does not match"
++            saw_skipped_login.load(Ordering::Relaxed),
++            "local-only fork should emit SkippedLogin instead of creating a Firebase anonymous user"
+         );
+     });
+ }
+ 
+-/// Even when a user is logged in, a redirect with a bad state and a `user_uid`
+-/// that does NOT match the current user must surface an `InvalidStateParameter`
+-/// error: the silent-ignore branch is reserved for redirects that target the
+-/// same user who is already authenticated.
+ #[test]
+-fn test_mismatched_state_with_different_user_uid_emits_invalid_state_parameter() {
++fn login_gated_feature_does_not_emit_auth_prompt() {
+     App::test((), |mut app| async move {
+         initialize_app(&mut app);
+ 
+-        let saw_invalid_state = track_invalid_state_failures(&mut app);
++        let saw_login_gate = Arc::new(AtomicBool::new(false));
++        let saw_login_gate_for_closure = saw_login_gate.clone();
+ 
+-        // Test user is logged in by default; generate a pending state so the
+-        // validation below fails because the incoming state is different.
+-        AuthManager::handle(&app).update(&mut app, |auth_manager, _ctx| {
+-            let _known_state = auth_manager.generate_auth_state();
++        app.update(|ctx| {
++            ctx.subscribe_to_model(&AuthManager::handle(ctx), move |_, event, _| {
++                if matches!(event, AuthManagerEvent::AttemptedLoginGatedFeature { .. }) {
++                    saw_login_gate_for_closure.store(true, Ordering::Relaxed);
++                }
++            });
+         });
+ 
+-        // Attacker-style payload: bogus state, plus a user_uid that differs
+-        // from the currently logged-in user's uid.
+-        let attacker_payload = AuthRedirectPayload {
+-            refresh_token: RefreshToken::new("attacker_refresh_token"),
+-            user_uid: Some(UserUid::new("not_the_current_user")),
+-            deleted_anonymous_user: Some(false),
+-            state: Some("not_the_real_state".to_owned()),
+-        };
+-
+         AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+-            auth_manager.initialize_user_from_auth_payload(attacker_payload, true, ctx);
++            auth_manager.attempt_login_gated_feature(
++                "local-only-test",
++                AuthViewVariant::RequireLoginCloseable,
++                ctx,
++            );
+         });
+ 
+         assert!(
+-            saw_invalid_state.load(Ordering::Relaxed),
+-            "expected AuthFailed(InvalidStateParameter) when incoming user_uid differs from current user"
++            !saw_login_gate.load(Ordering::Relaxed),
++            "local-only fork must not emit auth prompt events"
+         );
+     });
+ }
+ 
+-/// `log_out` must clear any pending CSRF state from an auth flow that was
+-/// started but never completed, so the token cannot be replayed against the
+-/// next session in the same process.
+ #[test]
+-fn test_log_out_clears_pending_auth_state() {
++fn account_urls_are_local_only_about_blank() {
+     App::test((), |mut app| async move {
+         initialize_app(&mut app);
+ 
+-        // `log_out` clears user+credentials and then calls `persist`, which
+-        // routes to `PersistedUser::remove_from_secure_storage`. That requires
+-        // a `SecureStorage` singleton, so register a no-op one for this test.
+-        app.update(|ctx| {
+-            warpui_extras::secure_storage::register_noop("warp_test", ctx);
+-        });
+-
+-        AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+-            let _pending = auth_manager.generate_auth_state();
+-            assert!(
+-                auth_manager.pending_auth_state.is_some(),
+-                "precondition: generate_auth_state should populate pending_auth_state"
++        AuthManager::handle(&app).update(&mut app, |auth_manager, _ctx| {
++            assert_eq!(
++                auth_manager.sign_up_url(),
++                "about:blank#local-only-account-disabled"
+             );
+-
+-            auth_manager.log_out(ctx);
+-
+-            assert!(
+-                auth_manager.pending_auth_state.is_none(),
+-                "log_out should clear pending_auth_state"
++            assert_eq!(
++                auth_manager.sign_in_url(),
++                "about:blank#local-only-account-disabled"
++            );
++            assert_eq!(
++                auth_manager.upgrade_url(),
++                "about:blank#local-only-account-disabled"
++            );
++            assert_eq!(
++                auth_manager.login_options_url("unused-token"),
++                "about:blank#local-only-account-disabled"
++            );
++            assert_eq!(
++                auth_manager.link_sso_url("user@example.com"),
++                "about:blank#local-only-account-disabled"
+             );
+         });
+     });
+ }
+ 
+-// These two tests verify that `persist` skips writing to secure storage under certain conditions.
+-// They rely on the fact that no secure storage singleton is registered in the test app: if
+-// `write_to_secure_storage` were ever called, it would panic trying to look up the unregistered
+-// singleton, causing the test to fail.
+-
+ #[test]
+-fn test_persist_skips_when_refresh_token_is_empty() {
++fn set_user_onboarded_updates_local_state_only() {
+     App::test((), |mut app| async move {
+         initialize_app(&mut app);
+ 
+-        // Override default test credentials with Firebase tokens that have an empty refresh token.
+-        app.update(|ctx| {
+-            let tokens = FirebaseAuthTokens {
+-                id_token: String::new(),
+-                refresh_token: String::new(),
+-                expiration_time: chrono::Utc::now().fixed_offset() + chrono::Duration::days(365),
+-            };
+-            AuthStateProvider::as_ref(ctx)
+-                .get()
+-                .set_credentials(Some(Credentials::Firebase(tokens)));
+-        });
+-
+         AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+-            auth_manager.persist(ctx);
++            auth_manager.set_user_onboarded(ctx);
+         });
+-    });
+-}
+-
+-#[test]
+-fn test_persist_skips_when_api_key_authenticated() {
+-    App::test((), |mut app| async move {
+-        initialize_app(&mut app);
+ 
+         app.update(|ctx| {
+-            AuthStateProvider::as_ref(ctx)
+-                .get()
+-                .set_credentials(Some(Credentials::ApiKey {
+-                    key: "wk-test-key".to_owned(),
+-                    owner_type: None,
+-                }));
+-        });
+-
+-        AuthManager::handle(&app).update(&mut app, |auth_manager, ctx| {
+-            auth_manager.persist(ctx);
++            assert_eq!(
++                AuthStateProvider::as_ref(ctx).get().is_onboarded(),
++                Some(true)
++            );
+         });
+     });
+ }
+diff --git a/app/src/auth/auth_view_modal.rs b/app/src/auth/auth_view_modal.rs
+index 71728c7f..c00037ab 100644
+--- a/app/src/auth/auth_view_modal.rs
++++ b/app/src/auth/auth_view_modal.rs
+@@ -8,7 +8,6 @@ use pathfinder_color::ColorU;
+ use pathfinder_geometry::vector::vec2f;
+ use url::Url;
+ use warp_core::errors::ErrorExt;
+-use warp_core::features::FeatureFlag;
+ use warpui::elements::ChildAnchor;
+ use warpui::elements::Container;
+ use warpui::elements::Fill;
+@@ -275,15 +274,9 @@ impl AuthView {
+     }
+ 
+     pub fn handle_login_later(&mut self, ctx: &mut ViewContext<Self>) {
+-        if FeatureFlag::SkipFirebaseAnonymousUser.is_enabled() {
+-            AuthManager::handle(ctx).update(ctx, |_, ctx| {
+-                ctx.emit(AuthManagerEvent::SkippedLogin);
+-            });
+-        } else {
+-            AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
+-                auth_manager.create_anonymous_user(None, ctx)
+-            });
+-        }
++        AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
++            auth_manager.skip_remote_anonymous_user_creation(ctx);
++        });
+     }
+ 
+     fn handle_auth_manager_event(&mut self, event: &AuthManagerEvent, ctx: &mut ViewContext<Self>) {
+diff --git a/app/src/auth/login_slide.rs b/app/src/auth/login_slide.rs
+index b6ed5f85..7aeaeaca 100644
+--- a/app/src/auth/login_slide.rs
++++ b/app/src/auth/login_slide.rs
+@@ -16,7 +16,6 @@ use onboarding::slides::{layout, slide_content};
+ use onboarding::{OnboardingIntention, AI_FEATURES, WARP_DRIVE_FEATURES};
+ use pathfinder_color::ColorU;
+ use ui_components::{button, Component as _, Options as _};
+-use warp_core::features::FeatureFlag;
+ use warp_core::ui::theme::color::internal_colors;
+ use warp_core::ui::Icon;
+ use warpui::clipboard::ClipboardContent;
+@@ -399,15 +398,9 @@ impl LoginSlideView {
+             },
+             ctx
+         );
+-        if FeatureFlag::SkipFirebaseAnonymousUser.is_enabled() {
+-            AuthManager::handle(ctx).update(ctx, |_, ctx| {
+-                ctx.emit(AuthManagerEvent::SkippedLogin);
+-            });
+-        } else {
+-            AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
+-                auth_manager.create_anonymous_user(None, ctx);
+-            });
+-        }
++        AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
++            auth_manager.skip_remote_anonymous_user_creation(ctx);
++        });
+         ctx.emit(LoginSlideEvent::LoginLaterConfirmed);
+     }
+ 
+-- 
+2.53.0
+

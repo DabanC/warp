@@ -1,0 +1,228 @@
+From b3bc3210d2a42a2fbdef0669203b78a07323e310 Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Fri, 22 May 2026 02:19:38 +0800
+Subject: [PATCH 11/18] local-only: initialize auth state locally
+
+---
+ app/src/auth/auth_state.rs | 134 ++++++++++++++++++-------------------
+ 1 file changed, 67 insertions(+), 67 deletions(-)
+
+diff --git a/app/src/auth/auth_state.rs b/app/src/auth/auth_state.rs
+index 85f119dc..99703d9d 100644
+--- a/app/src/auth/auth_state.rs
++++ b/app/src/auth/auth_state.rs
+@@ -7,7 +7,6 @@ use anyhow::anyhow;
+ use chrono::{DateTime, Duration, Utc};
+ use parking_lot::RwLock;
+ use uuid::Uuid;
+-use warp_core::channel::{Channel, ChannelState};
+ use warp_graphql::object_permissions::OwnerType;
+ use warpui::{AppContext, Entity, SingletonEntity};
+ 
+@@ -21,7 +20,7 @@ use super::{
+     auth_manager::user_persistence::PersistedUser,
+     credentials::Credentials,
+     user::{AnonymousUserType, FirebaseAuthTokens, PersonalObjectLimits, PrincipalType, User},
+-    UserUid, API_KEY_PREFIX,
++    UserUid,
+ };
+ 
+ #[cfg(any(not(target_family = "wasm"), test))]
+@@ -57,6 +56,7 @@ pub struct AuthState {
+ }
+ 
+ impl AuthState {
++    #[allow(dead_code)]
+     fn new(ctx: &AppContext) -> Self {
+         Self {
+             user: RwLock::new(None),
+@@ -66,6 +66,15 @@ impl AuthState {
+         }
+     }
+ 
++    fn new_local(installation_id: Uuid) -> Self {
++        Self {
++            user: RwLock::new(Some(User::local_installation(installation_id))),
++            anonymous_id: installation_id,
++            needs_reauth: AtomicBool::new(false),
++            credentials: RwLock::new(None),
++        }
++    }
++
+     #[cfg(any(test, feature = "integration_tests"))]
+     pub fn new_for_test() -> Self {
+         Self {
+@@ -75,6 +84,11 @@ impl AuthState {
+             credentials: RwLock::new(Some(Credentials::Test)),
+         }
+     }
++    #[cfg(test)]
++    pub fn new_local_for_test(installation_id: Uuid) -> Self {
++        Self::new_local(installation_id)
++    }
++
+     #[cfg(test)]
+     pub fn new_logged_out_for_test() -> Self {
+         Self {
+@@ -99,68 +113,18 @@ impl AuthState {
+         }
+     }
+ 
+-    /// Creates and initializes auth state. Checks, in order:
+-    /// 1. Test user (test/integration/skip_login builds)
+-    /// 2. Provided API key
+-    /// 3. WARP_USER_SECRET environment variable
+-    /// 4. Persisted user from secure storage
++    /// Creates local-only auth state. The local fork does not load Warp account
++    /// credentials, API keys for Warp auth, Firebase tokens, `WARP_USER_SECRET`,
++    /// or persisted secure-storage users during startup.
+     #[cfg_attr(target_family = "wasm", allow(dead_code))]
+     pub fn initialize(ctx: &AppContext, api_key: Option<String>) -> Self {
+-        let state = Self::new(ctx);
+-
+-        if Self::should_use_test_user() {
+-            state.set_user(Some(User::test()));
+-            #[cfg(any(test, feature = "integration_tests", feature = "skip_login"))]
+-            state.set_credentials(Some(Credentials::Test));
+-            return state;
+-        }
+-
+-        if let Some(api_key_value) = api_key {
+-            log::info!("Authenticating via API key");
+-            let formatted = if api_key_value.starts_with(API_KEY_PREFIX) {
+-                api_key_value
+-            } else {
+-                format!("{API_KEY_PREFIX}{api_key_value}")
+-            };
+-            state.set_credentials(Some(Credentials::ApiKey {
+-                key: formatted,
+-                owner_type: None,
+-            }));
+-            return state;
+-        }
+-
+-        // Try WARP_USER_SECRET environment variable.
+-        if let Some(persisted) = option_env!("WARP_USER_SECRET")
+-            .and_then(|s| serde_json::from_str::<PersistedUser>(s).ok())
+-        {
+-            state.apply_persisted_user(persisted);
+-            return state;
+-        }
+-
+-        // Try reading from secure storage.
+-        match PersistedUser::from_secure_storage(ctx) {
+-            Ok(persisted) => {
+-                if persisted.auth_tokens.refresh_token.is_empty() {
+-                    log::warn!(
+-                        "Found persisted user with empty refresh token; clearing secure storage entry"
+-                    );
+-                    let _ = PersistedUser::remove_from_secure_storage(ctx).map_err(|err| {
+-                        log::warn!("Unable to clear invalid user from secure storage: {err:?}");
+-                    });
+-                } else {
+-                    state.apply_persisted_user(persisted);
+-                }
+-            }
+-            Err(err) => {
+-                log::info!("Unable to read user from secure storage: {err:?}");
+-            }
++        if api_key.is_some() {
++            log::info!(
++                "Ignoring Warp account API key during local-only startup; configure AI provider keys in AI settings"
++            );
+         }
+ 
+-        state
+-    }
+-
+-    fn should_use_test_user() -> bool {
+-        cfg!(any(test, feature = "skip_login")) || ChannelState::channel() == Channel::Integration
++        Self::new_local(get_or_create_anonymous_id(ctx))
+     }
+ 
+     /// Determines the appropriate persistence action based on the current auth state.
+@@ -189,21 +153,19 @@ impl AuthState {
+                 };
+                 PersistAction::Persist(Box::new(persisted))
+             }
+-            // Remove persisted auth state if it is unset in-memory.
++            (Some(_), None) => PersistAction::DoNothing,
+             (None, None) => PersistAction::Remove,
+-            // Do not persist if using API keys, session cookies, or test credentials.
+             (Some(_), Some(Credentials::ApiKey { .. })) => PersistAction::DoNothing,
+             (Some(_), Some(Credentials::Bearer(_))) => PersistAction::DoNothing,
+             (Some(_), Some(Credentials::SessionCookie)) => PersistAction::DoNothing,
+             #[cfg(any(test, feature = "integration_tests", feature = "skip_login"))]
+             (Some(_), Some(Credentials::Test)) => PersistAction::DoNothing,
+-            // Credentials without a user, or user without credentials - transient states
+-            // during initialization or refresh; no persistence action needed.
+-            (None, Some(_)) | (Some(_), None) => PersistAction::DoNothing,
++            (None, Some(_)) => PersistAction::DoNothing,
+         }
+     }
+ 
+     /// Applies a deserialized PersistedUser, splitting it into User and Credentials.
++    #[allow(dead_code)]
+     fn apply_persisted_user(&self, persisted: PersistedUser) {
+         let user = User {
+             is_onboarded: persisted.is_onboarded,
+@@ -313,9 +275,11 @@ impl AuthState {
+         }
+     }
+ 
+-    /// Determines whether the user should be considered as logged in.
++    /// Determines whether the app has an identity ready for local UI flows.
++    /// In the local-only fork this is true for the local installation user even
++    /// though there are no remote Warp credentials.
+     pub fn is_logged_in(&self) -> bool {
+-        self.credentials.read().is_some()
++        self.user.read().is_some()
+     }
+ 
+     /// Returns whether the user should be treated as not having a full account.
+@@ -567,6 +531,42 @@ impl warp_managed_secrets::ActorProvider for AuthState {
+     }
+ }
+ 
++#[cfg(test)]
++mod local_only_tests {
++    use super::*;
++
++    #[test]
++    fn local_only_state_has_user_without_remote_credentials() {
++        let state = AuthState::new_local_for_test(Uuid::parse_str(
++            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
++        )
++        .expect("valid uuid"));
++
++        assert!(state.is_logged_in());
++        assert!(!state.is_anonymous_or_logged_out());
++        assert_eq!(
++            state.user_id().expect("local user id").as_str(),
++            "local-installation-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
++        );
++        assert_eq!(state.user_email().as_deref(), Some("local@warp.local"));
++        assert_eq!(state.credentials(), None);
++        assert_eq!(state.get_access_token_ignoring_validity(), None);
++        assert!(!state.is_api_key_authenticated());
++        assert_eq!(state.api_key(), None);
++        assert_eq!(state.global_skills(), Vec::<String>::new());
++    }
++
++    #[test]
++    fn local_only_persist_action_does_not_touch_secure_storage() {
++        let state = AuthState::new_local_for_test(Uuid::parse_str(
++            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
++        )
++        .expect("valid uuid"));
++
++        assert!(matches!(state.persist_action(), PersistAction::DoNothing));
++    }
++}
++
+ /// AuthStateProvider is a singleton model which provides a reference to the global AuthState.
+ pub struct AuthStateProvider {
+     auth_state: Arc<AuthState>,
+-- 
+2.53.0
+

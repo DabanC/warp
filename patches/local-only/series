@@ -5,3 +5,14 @@
 0005-local-only-document-fork-design-and-foundation-plan.patch
 0006-local-only-add-verification-script.patch
 0007-local-only-add-packaging-wrapper.patch
+0008-local-only-start-auth-removal-plan.patch
+0009-local-only-expand-auth-account-removal-plan.patch
+0010-local-only-add-local-installation-user.patch
+0011-local-only-initialize-auth-state-locally.patch
+0012-local-only-disable-remote-account-operations.patch
+0013-local-only-avoid-inert-account-refresh-flows.patch
+0014-local-only-start-desktop-without-account-prompts.patch
+0015-local-only-remove-account-logout-entry-points.patch
+0016-local-only-prune-anonymous-account-imports.patch
+0017-local-only-skip-startup-account-refresh.patch
+0018-local-only-guard-auth-account-entry-points.patch

@@ -1,0 +1,79 @@
+From cc4d6e01de9316fec41f1cd589b88f9e7b09e20c Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Sat, 23 May 2026 12:35:28 +0800
+Subject: [PATCH 16/18] local-only: prune anonymous account imports
+
+---
+ app/src/auth/user.rs              | 18 ------------------
+ app/src/server/server_api/auth.rs | 19 ++++++++++++++++++-
+ 2 files changed, 18 insertions(+), 19 deletions(-)
+
+diff --git a/app/src/auth/user.rs b/app/src/auth/user.rs
+index dfca483a..82ab11f9 100644
+--- a/app/src/auth/user.rs
++++ b/app/src/auth/user.rs
+@@ -36,24 +36,6 @@ impl From<warp_graphql::queries::get_user::PrincipalType> for PrincipalType {
+     }
+ }
+ 
+-impl TryFrom<warp_graphql::mutations::create_anonymous_user::AnonymousUserType>
+-    for AnonymousUserType
+-{
+-    type Error = anyhow::Error;
+-    fn try_from(
+-        value: warp_graphql::mutations::create_anonymous_user::AnonymousUserType,
+-    ) -> Result<Self, Self::Error> {
+-        match value {
+-            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::NativeClientAnonymousUser => Ok(AnonymousUserType::NativeClientAnonymousUser),
+-            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::NativeClientAnonymousUserFeatureGated => Ok(AnonymousUserType::NativeClientAnonymousUserFeatureGated),
+-            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::WebClientAnonymousUser => Ok(AnonymousUserType::WebClientAnonymousUser),
+-            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::Other(_) => {
+-                Err(anyhow!("could not convert unknown anonymous user type"))
+-            },
+-        }
+-    }
+-}
+-
+ #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+ pub struct PersonalObjectLimits {
+     pub env_var_limit: usize,
+diff --git a/app/src/server/server_api/auth.rs b/app/src/server/server_api/auth.rs
+index 0e85d8c7..dfa9a0fa 100644
+--- a/app/src/server/server_api/auth.rs
++++ b/app/src/server/server_api/auth.rs
+@@ -808,6 +808,23 @@ struct UserProperties {
+     api_key_owner_type: Option<OwnerType>,
+ }
+ 
++fn convert_gql_anonymous_user_type(
++    anonymous_user_type: AnonymousUserType,
++) -> Option<crate::auth::user::AnonymousUserType> {
++    match anonymous_user_type {
++        AnonymousUserType::NativeClientAnonymousUser => {
++            Some(crate::auth::user::AnonymousUserType::NativeClientAnonymousUser)
++        }
++        AnonymousUserType::NativeClientAnonymousUserFeatureGated => {
++            Some(crate::auth::user::AnonymousUserType::NativeClientAnonymousUserFeatureGated)
++        }
++        AnonymousUserType::WebClientAnonymousUser => {
++            Some(crate::auth::user::AnonymousUserType::WebClientAnonymousUser)
++        }
++        AnonymousUserType::Other(_) => None,
++    }
++}
++
+ impl From<GqlUserOutput> for UserProperties {
+     fn from(user_output: GqlUserOutput) -> Self {
+         let principal_type = user_output
+@@ -850,7 +867,7 @@ impl From<GqlUserOutput> for UserProperties {
+             local_id,
+             metadata: user_profile.into(),
+             needs_sso_link,
+-            anonymous_user_type: anonymous_user_type.and_then(|t| t.try_into().ok()),
++            anonymous_user_type: anonymous_user_type.and_then(convert_gql_anonymous_user_type),
+             is_on_work_domain,
+             linked_at,
+             personal_object_limits: personal_object_limits.and_then(|t| t.try_into().ok()),
+-- 
+2.53.0
+
