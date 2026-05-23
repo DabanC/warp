@@ -1,7 +1,7 @@
 From 0b0dcb49a8b06644e115b0bb00a655f4d8620b9f Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sat, 23 May 2026 13:16:22 +0800
-Subject: [PATCH 19/22] local-only: disable residual account ingress paths
+Subject: [PATCH 19/23] local-only: disable residual account ingress paths
 
 ---
  app/src/auth/auth_manager.rs          | 121 ++++----------------------

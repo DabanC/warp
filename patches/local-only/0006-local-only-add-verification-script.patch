@@ -1,7 +1,7 @@
 From 026a058e6ecc730d9f5e5b6e0dfaa5134301fbeb Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Fri, 22 May 2026 01:03:13 +0800
-Subject: [PATCH 06/22] local-only: add verification script
+Subject: [PATCH 06/23] local-only: add verification script
 
 ---
  script/local-only/verify | 168 +++++++++++++++++++++++++++++++++++++++

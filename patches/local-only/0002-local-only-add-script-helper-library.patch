@@ -1,7 +1,7 @@
 From ca77404fbbdd8638a0ea19ee93445e52c0bab792 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Thu, 21 May 2026 21:43:06 +0800
-Subject: [PATCH 02/22] local-only: add script helper library
+Subject: [PATCH 02/23] local-only: add script helper library
 
 ---
  script/local-only/lib.sh | 53 ++++++++++++++++++++++++++++++++++++++++

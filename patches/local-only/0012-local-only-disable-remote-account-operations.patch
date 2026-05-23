@@ -1,7 +1,7 @@
 From f37925ff8b7087eb1c9c23bc3d000884e4c0f047 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Fri, 22 May 2026 03:04:16 +0800
-Subject: [PATCH 12/22] local-only: disable remote account operations
+Subject: [PATCH 12/23] local-only: disable remote account operations
 
 ---
  app/src/auth/auth_manager.rs       | 300 ++++-------------------------

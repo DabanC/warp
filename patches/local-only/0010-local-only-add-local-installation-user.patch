@@ -1,7 +1,7 @@
 From 0a247c657299e3a5bf4b2a64591be442bbf60a0f Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Fri, 22 May 2026 02:01:42 +0800
-Subject: [PATCH 10/22] local-only: add local installation user
+Subject: [PATCH 10/23] local-only: add local installation user
 
 ---
  app/src/auth/user.rs       | 19 +++++++++++++++++++

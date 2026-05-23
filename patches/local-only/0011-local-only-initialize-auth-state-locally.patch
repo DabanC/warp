@@ -1,7 +1,7 @@
 From b3bc3210d2a42a2fbdef0669203b78a07323e310 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Fri, 22 May 2026 02:19:38 +0800
-Subject: [PATCH 11/22] local-only: initialize auth state locally
+Subject: [PATCH 11/23] local-only: initialize auth state locally
 
 ---
  app/src/auth/auth_state.rs | 134 ++++++++++++++++++-------------------
