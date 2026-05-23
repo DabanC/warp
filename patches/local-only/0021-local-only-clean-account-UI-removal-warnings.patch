@@ -1,7 +1,7 @@
 From 51a6e9afb56a630d66de7aea8ba8b74f057b3d0f Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sat, 23 May 2026 14:15:35 +0800
-Subject: [PATCH 21/25] local-only: clean account UI removal warnings
+Subject: [PATCH 21/26] local-only: clean account UI removal warnings
 
 ---
  app/src/settings_view/main_page.rs | 2 --

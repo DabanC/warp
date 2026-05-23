@@ -1,7 +1,7 @@
 From 751076046724b6b215383b4e64fe920dbe9b0452 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sat, 23 May 2026 12:42:56 +0800
-Subject: [PATCH 17/25] local-only: skip startup account refresh
+Subject: [PATCH 17/26] local-only: skip startup account refresh
 
 ---
  app/src/lib.rs | 75 ++++++++------------------------------------------
