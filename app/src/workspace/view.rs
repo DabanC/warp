@@ -3861,6 +3861,21 @@ impl Workspace {
         left_panel_snapshot: &LeftPanelSnapshot,
         ctx: &mut ViewContext<Self>,
     ) {
+        if matches!(
+            left_panel_snapshot.left_panel_displayed_tab,
+            LeftPanelDisplayedTab::WarpDrive
+        ) && !WarpDriveSettings::is_warp_drive_enabled(ctx)
+        {
+            pane_group.update(ctx, |pg, ctx| {
+                pg.set_left_panel_open(false, ctx);
+            });
+            self.left_panel_view.update(ctx, |lp, ctx| {
+                lp.restore_active_view_from_snapshot(None, ctx);
+            });
+            ctx.notify();
+            return;
+        }
+
         pane_group.update(ctx, |pg, ctx| {
             pg.set_left_panel_open(true, ctx);
         });
@@ -3873,14 +3888,17 @@ impl Workspace {
         }
 
         self.left_panel_view.update(ctx, |lp, ctx| {
-            // Restore which panel tab was active
+            // Restore which panel tab was active. Local-only builds disable Warp Drive;
+            // skip stale persisted Warp Drive snapshots instead of reopening the cloud panel.
             let active_view = match left_panel_snapshot.left_panel_displayed_tab {
-                LeftPanelDisplayedTab::FileTree => ToolPanelView::ProjectExplorer,
-                LeftPanelDisplayedTab::GlobalSearch => ToolPanelView::GlobalSearch {
+                LeftPanelDisplayedTab::FileTree => Some(ToolPanelView::ProjectExplorer),
+                LeftPanelDisplayedTab::GlobalSearch => Some(ToolPanelView::GlobalSearch {
                     entry_focus: GlobalSearchEntryFocus::Results,
-                },
-                LeftPanelDisplayedTab::WarpDrive => ToolPanelView::WarpDrive,
-                LeftPanelDisplayedTab::ConversationListView => ToolPanelView::ConversationListView,
+                }),
+                LeftPanelDisplayedTab::WarpDrive => {
+                    WarpDriveSettings::is_warp_drive_enabled(ctx).then_some(ToolPanelView::WarpDrive)
+                }
+                LeftPanelDisplayedTab::ConversationListView => Some(ToolPanelView::ConversationListView),
             };
             lp.restore_active_view_from_snapshot(active_view, ctx);
             lp.set_active_pane_group(pane_group.clone(), &self.working_directories_model, ctx);
@@ -4983,7 +5001,7 @@ impl Workspace {
             }
 
             // If the agent management view is open, we want to close it when we activate a new tab.
-            if FeatureFlag::AgentManagementView.is_enabled() {
+            if HeaderToolbarItemKind::AgentManagement.is_supported(ctx) {
                 self.set_is_agent_management_view_open(false, ctx);
             }
 
@@ -5145,7 +5163,7 @@ impl Workspace {
 
         // If the agent management view is open, we want to close it when we change focus to rename a tab.
         // This function doesn't call `activate_tab_internal`, which is why we need the extra check here.
-        if FeatureFlag::AgentManagementView.is_enabled() {
+        if HeaderToolbarItemKind::AgentManagement.is_supported(ctx) {
             self.set_is_agent_management_view_open(false, ctx);
         }
 
@@ -7928,6 +7946,14 @@ impl Workspace {
         explicit_user_action: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !WarpDriveSettings::is_warp_drive_enabled(ctx) {
+            self.current_workspace_state.is_warp_drive_open = false;
+            self.set_selected_object(None, ctx);
+            self.focus_active_tab(ctx);
+            ctx.notify();
+            return;
+        }
+
         // Closing all left panels will also close warp drive so we need to retrieve
         // whether warp drive was open first, and toggle based on the initial value.
         let was_warp_drive_open = self.current_workspace_state.is_warp_drive_open;
@@ -8043,7 +8069,7 @@ impl Workspace {
             self.open_left_panel(ctx);
         }
         self.left_panel_view.update(ctx, |lp, ctx| {
-            lp.restore_active_view_from_snapshot(ToolPanelView::ConversationListView, ctx);
+            lp.restore_active_view_from_snapshot(Some(ToolPanelView::ConversationListView), ctx);
         });
 
         // Mark that we've done the one-time auto-open
@@ -10138,8 +10164,8 @@ impl Workspace {
         let pane_group_id = pane_group.id();
 
         self.left_panel_view.read(app, |lp, _| {
-            Some(LeftPanelSnapshot {
-                left_panel_displayed_tab: lp.active_view().into(),
+            lp.active_view().map(|active_view| LeftPanelSnapshot {
+                left_panel_displayed_tab: active_view.into(),
                 pane_group_id: pane_group_id.to_string(),
                 width: left_panel_width.unwrap_or(DEFAULT_LEFT_PANEL_WIDTH) as usize,
             })
@@ -12688,7 +12714,13 @@ impl Workspace {
                 _ => self.open_navigation_palette(ctx),
             },
             PaletteMode::LaunchConfig => self.open_launch_config_palette(ctx),
-            PaletteMode::WarpDrive => self.open_warp_drive_palette(ctx),
+            PaletteMode::WarpDrive => {
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    self.open_warp_drive_palette(ctx)
+                } else {
+                    self.close_palette(true, None, ctx);
+                }
+            }
             PaletteMode::Files => self.open_files_palette(ctx),
             PaletteMode::Conversations => self.open_conversations_palette(ctx),
         }
@@ -12785,7 +12817,9 @@ impl Workspace {
                 true,
             ),
             CommandPaletteEvent::ViewInWarpDrive { id } => {
-                self.view_in_and_focus_warp_drive(WarpDriveItemId::Object(*id), ctx);
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    self.view_in_and_focus_warp_drive(WarpDriveItemId::Object(*id), ctx);
+                }
             }
             #[allow(unused_variables)]
             CommandPaletteEvent::OpenFile {
@@ -12849,6 +12883,12 @@ impl Workspace {
     /// This function is used when we set a selected object, which is an object open in an active pane.
     /// We do not want to focus Warp Drive, instead we want to focus the editor of the open object.
     fn view_in_warp_drive(&mut self, item_id: WarpDriveItemId, ctx: &mut ViewContext<Self>) {
+        if !WarpDriveSettings::is_warp_drive_enabled(ctx) {
+            self.current_workspace_state.is_warp_drive_open = false;
+            ctx.notify();
+            return;
+        }
+
         self.open_left_panel(ctx);
         self.left_panel_view.update(ctx, |left_panel, ctx| {
             left_panel.handle_action(&LeftPanelAction::WarpDrive, ctx);
@@ -13089,13 +13129,15 @@ impl Workspace {
                 self.open_network_log_pane(ctx);
             }
             SettingsViewEvent::OpenWarpDrive => {
-                self.close_all_overlays(ctx);
-                self.open_or_toggle_warp_drive(
-                    false, /* toggle */
-                    false, /* explicit_user_action */
-                    ctx,
-                );
-                ctx.notify();
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    self.close_all_overlays(ctx);
+                    self.open_or_toggle_warp_drive(
+                        false, /* toggle */
+                        false, /* explicit_user_action */
+                        ctx,
+                    );
+                    ctx.notify();
+                }
             }
             SettingsViewEvent::SignupAnonymousUser => {
                 log::info!("Ignoring settings signup request in local-only build");
@@ -13776,7 +13818,7 @@ impl Workspace {
                 WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                     toast_stack.add_ephemeral_toast(
                         DismissibleToast::error(
-                            "Cloud handoff isn't available for orchestrated agent conversations."
+                            "Remote agent handoff isn't available for orchestrated agent conversations."
                                 .to_owned(),
                         ),
                         window_id,
@@ -14300,6 +14342,10 @@ impl Workspace {
             pane_group::Event::OpenWarpDriveLink {
                 open_warp_drive_args,
             } => {
+                if !WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    return;
+                }
+
                 let object_found = CloudModel::as_ref(ctx)
                     .get_by_uid(&open_warp_drive_args.server_id.uid())
                     .is_some();
@@ -14938,7 +14984,11 @@ impl Workspace {
                 mode,
                 source,
                 query,
-            } => self.open_palette_action(*mode, *source, query.as_deref(), ctx),
+            } => {
+                if *mode != PaletteMode::WarpDrive || WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    self.open_palette_action(*mode, *source, query.as_deref(), ctx);
+                }
+            }
             pane_group::Event::FileUploadCommand {
                 upload_id,
                 command: _,
@@ -15127,11 +15177,14 @@ impl Workspace {
                 target_view,
                 force_open,
             } => {
+                let is_warp_drive_enabled = WarpDriveSettings::is_warp_drive_enabled(ctx);
                 let is_target_active =
                     self.left_panel_view
                         .read(ctx, |left_panel, _| match target_view {
                             LeftPanelTargetView::FileTree => left_panel.is_file_tree_active(),
-                            LeftPanelTargetView::WarpDrive => left_panel.is_warp_drive_active(),
+                            LeftPanelTargetView::WarpDrive => {
+                                is_warp_drive_enabled && left_panel.is_warp_drive_active()
+                            }
                         });
 
                 if self.active_tab_pane_group().as_ref(ctx).left_panel_open && is_target_active {
@@ -15146,7 +15199,12 @@ impl Workspace {
                     self.left_panel_view.update(ctx, |left_panel, ctx| {
                         let action = match target_view {
                             LeftPanelTargetView::FileTree => LeftPanelAction::ProjectExplorer,
-                            LeftPanelTargetView::WarpDrive => LeftPanelAction::WarpDrive,
+                            LeftPanelTargetView::WarpDrive => {
+                                if !is_warp_drive_enabled {
+                                    return;
+                                }
+                                LeftPanelAction::WarpDrive
+                            }
                         };
                         left_panel.handle_action_with_force_open(&action, *force_open, ctx);
                     });
@@ -15626,6 +15684,12 @@ impl Workspace {
     }
 
     fn handle_warp_drive_event(&mut self, event: &DrivePanelEvent, ctx: &mut ViewContext<Self>) {
+        if !WarpDriveSettings::is_warp_drive_enabled(ctx) {
+            self.current_workspace_state.is_warp_drive_open = false;
+            ctx.notify();
+            return;
+        }
+
         match event {
             DrivePanelEvent::RunWorkflow(workflow) => {
                 self.run_cloud_workflow_in_active_input(
@@ -16845,6 +16909,10 @@ impl Workspace {
     }
 
     fn set_selected_object(&mut self, id: Option<WarpDriveItemId>, ctx: &mut ViewContext<Self>) {
+        if !WarpDriveSettings::is_warp_drive_enabled(ctx) {
+            return;
+        }
+
         // Set Warp drive index selected state
         self.update_warp_drive_view(ctx, |drive_panel, ctx| {
             drive_panel.set_selected_object(id, ctx);
@@ -17930,12 +17998,12 @@ impl Workspace {
                         .left_panel_views
                         .first()
                         .copied()
-                        .unwrap_or(ToolPanelView::WarpDrive)
                     {
-                        ToolPanelView::ProjectExplorer => "Project explorer",
-                        ToolPanelView::GlobalSearch { .. } => "Global search",
-                        ToolPanelView::WarpDrive => "Warp Drive",
-                        ToolPanelView::ConversationListView => "Agent conversations",
+                        Some(ToolPanelView::ProjectExplorer) => "Project explorer",
+                        Some(ToolPanelView::GlobalSearch { .. }) => "Global search",
+                        Some(ToolPanelView::WarpDrive) => "Warp Drive",
+                        Some(ToolPanelView::ConversationListView) => "Agent conversations",
+                        None => "Tools panel",
                     }
                 } else {
                     "Tools panel"
@@ -17984,12 +18052,12 @@ impl Workspace {
                 .left_panel_views
                 .first()
                 .copied()
-                .unwrap_or(ToolPanelView::WarpDrive)
             {
-                ToolPanelView::ProjectExplorer => "Project explorer",
-                ToolPanelView::GlobalSearch { .. } => "Global search",
-                ToolPanelView::WarpDrive => "Warp Drive",
-                ToolPanelView::ConversationListView => "Agent conversations",
+                Some(ToolPanelView::ProjectExplorer) => "Project explorer",
+                Some(ToolPanelView::GlobalSearch { .. }) => "Global search",
+                Some(ToolPanelView::WarpDrive) => "Warp Drive",
+                Some(ToolPanelView::ConversationListView) => "Agent conversations",
+                None => "Tools panel",
             }
         } else {
             "Tools panel"
@@ -18459,7 +18527,7 @@ impl Workspace {
             .finish();
         } else {
             // Copy from our saved tab_bar_state to ensure all tabs get rendered with the same state
-            let active_tab_index = if FeatureFlag::AgentManagementView.is_enabled()
+            let active_tab_index = if HeaderToolbarItemKind::AgentManagement.is_supported(ctx)
                 && self.current_workspace_state.is_agent_management_view_open
             {
                 None
@@ -18746,7 +18814,7 @@ impl Workspace {
 
         if FeatureFlag::AvatarInTabBar.is_enabled() {
             target.add_child(
-                Container::new(self.render_avatar_button(appearance, ctx))
+                Container::new(self.render_settings_button(appearance))
                     .with_margin_left(TAB_BAR_PADDING_LEFT)
                     .finish(),
             );
@@ -19404,7 +19472,7 @@ impl Workspace {
     ) -> Box<dyn Element> {
         let active_tab_data = &self.tabs[self.active_tab_index];
 
-        let active_content = if FeatureFlag::AgentManagementView.is_enabled()
+        let active_content = if HeaderToolbarItemKind::AgentManagement.is_supported(app)
             && self.current_workspace_state.is_agent_management_view_open
         {
             ChildView::new(&self.agent_management_view).finish()
@@ -20192,7 +20260,10 @@ impl Workspace {
                 )
             }
             HeaderToolbarItemKind::ToolsPanel => {
-                if !pane_group.left_panel_open || warpui::platform::is_mobile_device() {
+                if !pane_group.left_panel_open
+                    || self.left_panel_views.is_empty()
+                    || warpui::platform::is_mobile_device()
+                {
                     return None;
                 }
                 Some(ChildView::new(&self.left_panel_view).finish())
@@ -21296,7 +21367,11 @@ impl TypedActionView for Workspace {
                 mode,
                 source,
                 query,
-            } => self.open_palette_action(*mode, *source, query.as_deref(), ctx),
+            } => {
+                if *mode != PaletteMode::WarpDrive || WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    self.open_palette_action(*mode, *source, query.as_deref(), ctx);
+                }
+            }
             TogglePalette {
                 mode: palette_mode,
                 source,
@@ -21346,7 +21421,7 @@ impl TypedActionView for Workspace {
             ToggleDebugNetworkStatus => self.toggle_debug_network_status(ctx),
             ToggleShowMemoryStats => self.toggle_show_memory_stats(ctx),
             ToggleResourceCenter => self.toggle_resource_center(ctx),
-            ToggleUserMenu => self.toggle_user_menu(ctx),
+            ToggleUserMenu => self.show_settings(ctx),
             ToggleKeybindingsPage => self.toggle_keybindings_page(ctx),
             ShowCommandSearch(CommandSearchOptions {
                 filter,
@@ -21378,20 +21453,21 @@ impl TypedActionView for Workspace {
                 }
             }
             CreateTeamNotebook => {
-                let team_uid = self.team_uid(ctx);
-                if let Some(team_uid) = team_uid {
-                    self.update_warp_drive_view(ctx, |drive_panel, ctx| {
-                        drive_panel.open_cloud_object_dialog(
-                            DriveObjectType::Notebook {
-                                is_ai_document: false,
-                            },
-                            Space::Team { team_uid },
-                            None,
-                            ctx,
-                        );
-                    });
-                    self.current_workspace_state.is_warp_drive_open = true;
-                    ctx.notify();
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    let team_uid = self.team_uid(ctx);
+                    if let Some(team_uid) = team_uid {
+                        self.update_warp_drive_view(ctx, |drive_panel, ctx| {
+                            drive_panel.open_cloud_object_dialog(
+                                DriveObjectType::Notebook {
+                                    is_ai_document: false,
+                                },
+                                Space::Team { team_uid },
+                                None,
+                                ctx,
+                            );
+                        });
+                        self.open_or_toggle_warp_drive(false, false, ctx);
+                    }
                 }
             }
             CreatePersonalEnvVarCollection => {
@@ -21408,18 +21484,19 @@ impl TypedActionView for Workspace {
                 }
             }
             CreateTeamEnvVarCollection => {
-                let team_uid = self.team_uid(ctx);
-                if let Some(team_uid) = team_uid {
-                    self.update_warp_drive_view(ctx, |drive_panel, ctx| {
-                        drive_panel.open_cloud_object_dialog(
-                            DriveObjectType::EnvVarCollection,
-                            Space::Team { team_uid },
-                            None,
-                            ctx,
-                        );
-                    });
-                    self.current_workspace_state.is_warp_drive_open = true;
-                    ctx.notify();
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    let team_uid = self.team_uid(ctx);
+                    if let Some(team_uid) = team_uid {
+                        self.update_warp_drive_view(ctx, |drive_panel, ctx| {
+                            drive_panel.open_cloud_object_dialog(
+                                DriveObjectType::EnvVarCollection,
+                                Space::Team { team_uid },
+                                None,
+                                ctx,
+                            );
+                        });
+                        self.open_or_toggle_warp_drive(false, false, ctx);
+                    }
                 }
             }
             CreatePersonalWorkflow => {
@@ -21458,30 +21535,32 @@ impl TypedActionView for Workspace {
                 }
             }
             CreatePersonalFolder => {
-                self.update_warp_drive_view(ctx, |drive_panel, ctx| {
-                    drive_panel.open_cloud_object_dialog(
-                        DriveObjectType::Folder,
-                        Space::Personal,
-                        None,
-                        ctx,
-                    );
-                });
-                self.current_workspace_state.is_warp_drive_open = true;
-                ctx.notify();
-            }
-            CreateTeamFolder => {
-                let team_uid = self.team_uid(ctx);
-                if let Some(team_uid) = team_uid {
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
                     self.update_warp_drive_view(ctx, |drive_panel, ctx| {
                         drive_panel.open_cloud_object_dialog(
                             DriveObjectType::Folder,
-                            Space::Team { team_uid },
+                            Space::Personal,
                             None,
                             ctx,
                         );
                     });
-                    self.current_workspace_state.is_warp_drive_open = true;
-                    ctx.notify();
+                    self.open_or_toggle_warp_drive(false, false, ctx);
+                }
+            }
+            CreateTeamFolder => {
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    let team_uid = self.team_uid(ctx);
+                    if let Some(team_uid) = team_uid {
+                        self.update_warp_drive_view(ctx, |drive_panel, ctx| {
+                            drive_panel.open_cloud_object_dialog(
+                                DriveObjectType::Folder,
+                                Space::Team { team_uid },
+                                None,
+                                ctx,
+                            );
+                        });
+                        self.open_or_toggle_warp_drive(false, false, ctx);
+                    }
                 }
             }
             ToggleMouseReporting => self.toggle_mouse_reporting(ctx),
@@ -21749,9 +21828,7 @@ impl TypedActionView for Workspace {
                 ctx.notify();
             }
             ToggleAgentManagementView => {
-                if AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
-                    && FeatureFlag::AgentManagementView.is_enabled()
-                {
+                if HeaderToolbarItemKind::AgentManagement.is_supported(ctx) {
                     let is_open = !self.current_workspace_state.is_agent_management_view_open;
                     self.set_is_agent_management_view_open(is_open, ctx);
 
@@ -21770,9 +21847,7 @@ impl TypedActionView for Workspace {
                 }
             }
             ViewAgentRunsForEnvironment { environment_id } => {
-                if AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
-                    && FeatureFlag::AgentManagementView.is_enabled()
-                {
+                if HeaderToolbarItemKind::AgentManagement.is_supported(ctx) {
                     self.set_is_agent_management_view_open(true, ctx);
                     ctx.focus(&self.agent_management_view);
 
@@ -21825,9 +21900,7 @@ impl TypedActionView for Workspace {
                 self.add_terminal_pane_in_ai_mode(*zero_state_prompt_suggestion_type, ctx);
             }
             OpenCloudAgentSetupGuide => {
-                if AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
-                    && FeatureFlag::AgentManagementView.is_enabled()
-                {
+                if HeaderToolbarItemKind::AgentManagement.is_supported(ctx) {
                     self.set_is_agent_management_view_open(true, ctx);
                     ctx.focus(&self.agent_management_view);
                     self.agent_management_view.update(ctx, |view, ctx| {
@@ -22092,7 +22165,9 @@ impl TypedActionView for Workspace {
             FocusRightPanel => self.focus_right_panel(ctx),
             ViewObjectInWarpDrive(item_id) => {
                 // Focus newly created object in WD
-                self.view_in_and_focus_warp_drive(*item_id, ctx);
+                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                    self.view_in_and_focus_warp_drive(*item_id, ctx);
+                }
             }
             OpenObjectSharingSettings { object_id, source } => {
                 self.open_object_sharing_settings(*object_id, None, *source, ctx);
@@ -22781,14 +22856,14 @@ impl TypedActionView for Workspace {
             ToggleProjectExplorer => {
                 if *CodeSettings::as_ref(ctx).show_project_explorer {
                     let is_showing = self.left_panel_view.as_ref(ctx).active_view()
-                        == ToolPanelView::ProjectExplorer;
+                        == Some(ToolPanelView::ProjectExplorer);
                     self.toggle_left_panel_view(&LeftPanelAction::ProjectExplorer, is_showing, ctx);
                 }
             }
             ToggleWarpDrive => {
                 if WarpDriveSettings::is_warp_drive_enabled(ctx) {
-                    let is_showing =
-                        self.left_panel_view.as_ref(ctx).active_view() == ToolPanelView::WarpDrive;
+                    let is_showing = self.left_panel_view.as_ref(ctx).active_view()
+                        == Some(ToolPanelView::WarpDrive);
                     self.toggle_left_panel_view(&LeftPanelAction::WarpDrive, is_showing, ctx);
                 }
             }
@@ -22798,7 +22873,7 @@ impl TypedActionView for Workspace {
                 {
                     let is_showing = matches!(
                         self.left_panel_view.as_ref(ctx).active_view(),
-                        ToolPanelView::GlobalSearch { .. }
+                        Some(ToolPanelView::GlobalSearch { .. })
                     );
                     self.toggle_left_panel_view(
                         &LeftPanelAction::GlobalSearch {
@@ -22837,7 +22912,7 @@ impl TypedActionView for Workspace {
             ToggleConversationListView => {
                 if FeatureFlag::AgentViewConversationListView.is_enabled() {
                     let is_showing = self.left_panel_view.as_ref(ctx).active_view()
-                        == ToolPanelView::ConversationListView;
+                        == Some(ToolPanelView::ConversationListView);
                     self.toggle_left_panel_view(
                         &LeftPanelAction::ConversationListView,
                         is_showing,
@@ -24088,18 +24163,8 @@ impl View for Workspace {
             );
         }
 
-        if FeatureFlag::AvatarInTabBar.is_enabled() && self.is_user_menu_open {
-            stack.add_positioned_overlay_child(
-                ChildView::new(&self.user_menu).finish(),
-                OffsetPositioning::offset_from_save_position_element(
-                    USER_AVATAR_BUTTON_POSITION_ID,
-                    Vector2F::zero(),
-                    PositionedElementOffsetBounds::WindowByPosition,
-                    PositionedElementAnchor::BottomRight,
-                    ChildAnchor::TopRight,
-                ),
-            );
-        }
+        // Local-only builds render the tab-bar slot as a Settings button, so the
+        // account menu overlay should not be shown from stale user-menu state.
 
         if self.current_workspace_state.is_notification_mailbox_open {
             if let Some(view) = &self.notification_mailbox_view {

@@ -548,7 +548,7 @@ mod local_only_tests {
             "local-installation-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         );
         assert_eq!(state.user_email().as_deref(), Some("local@warp.local"));
-        assert_eq!(state.credentials(), None);
+        assert!(state.credentials().is_none());
         assert_eq!(state.get_access_token_ignoring_validity(), None);
         assert!(!state.is_api_key_authenticated());
         assert_eq!(state.api_key(), None);

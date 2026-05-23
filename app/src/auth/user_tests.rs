@@ -61,7 +61,7 @@ fn test_local_installation_user_is_not_remote_or_anonymous() {
     assert!(!user.is_user_anonymous());
     assert!(!user.is_on_work_domain);
     assert_eq!(user.linked_at, None);
-    assert_eq!(user.personal_object_limits, None);
+    assert!(user.personal_object_limits.is_none());
     assert_eq!(user.principal_type, PrincipalType::User);
     assert!(user.global_skills.is_empty());
 }

@@ -128,12 +128,12 @@ mod active_view_state {
         new_view: ToolPanelView,
         ctx: &mut ViewContext<super::LeftPanelView>,
     ) {
-        let previous = left_panel.active_view.0;
-        left_panel.active_view.0 = new_view;
+        let previous = left_panel.active_view.as_ref().map(ActiveViewState::get);
+        left_panel.active_view = Some(ActiveViewState(new_view));
         left_panel.update_button_active_states();
         ctx.notify();
 
-        let was_conversation_list_open = previous == ToolPanelView::ConversationListView;
+        let was_conversation_list_open = previous == Some(ToolPanelView::ConversationListView);
         let is_conversation_list_open = new_view == ToolPanelView::ConversationListView;
         if was_conversation_list_open && !is_conversation_list_open {
             left_panel.on_conversation_list_view_visibility_changed(false, ctx);
@@ -169,7 +169,7 @@ pub struct LeftPanelView {
     close_button_mouse_state: MouseStateHandle,
     warp_drive_view: ViewHandle<DrivePanel>,
     conversation_list_view: ViewHandle<ConversationListView>,
-    active_view: active_view_state::ActiveViewState,
+    active_view: Option<active_view_state::ActiveViewState>,
     toolbelt_buttons: Vec<ToolbeltButtonConfig>,
     active_pane_group: Option<WeakViewHandle<PaneGroup>>,
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
@@ -235,7 +235,7 @@ impl LeftPanelView {
             }
         });
 
-        let active_view = views.first().copied().unwrap_or(ToolPanelView::WarpDrive);
+        let active_view = views.first().copied();
         let toolbelt_buttons = views
             .iter()
             .map(|view| Self::create_toolbelt_button_config(view, ctx))
@@ -310,7 +310,7 @@ impl LeftPanelView {
             close_button_mouse_state: Default::default(),
             warp_drive_view,
             conversation_list_view,
-            active_view: active_view_state::new(active_view),
+            active_view: active_view.map(active_view_state::new),
             toolbelt_buttons,
             active_pane_group: None,
             working_directories_model,
@@ -344,13 +344,15 @@ impl LeftPanelView {
         ctx: &mut ViewContext<Self>,
     ) {
         // Check if the current active view is still available
-        let current_view = self.active_view.get();
-        let is_current_view_available = views.iter().any(|v| {
-            // Use discriminant comparison for GlobalSearch since it has inner data
-            match (v, &current_view) {
-                (ToolPanelView::GlobalSearch { .. }, ToolPanelView::GlobalSearch { .. }) => true,
-                _ => std::mem::discriminant(v) == std::mem::discriminant(&current_view),
-            }
+        let current_view = self.active_view.as_ref().map(active_view_state::ActiveViewState::get);
+        let is_current_view_available = current_view.is_some_and(|current_view| {
+            views.iter().any(|v| {
+                // Use discriminant comparison for GlobalSearch since it has inner data
+                match (v, &current_view) {
+                    (ToolPanelView::GlobalSearch { .. }, ToolPanelView::GlobalSearch { .. }) => true,
+                    _ => std::mem::discriminant(v) == std::mem::discriminant(&current_view),
+                }
+            })
         });
 
         // Rebuild toolbelt buttons
@@ -363,6 +365,10 @@ impl LeftPanelView {
         if !is_current_view_available {
             if let Some(first_view) = views.first().copied() {
                 active_view_state::set(self, first_view, ctx);
+            } else {
+                self.active_view = None;
+                self.update_button_active_states();
+                self.update_active_file_tree_subscription_state(ctx);
             }
         } else {
             self.update_button_active_states();
@@ -523,16 +529,18 @@ impl LeftPanelView {
             .get_file_tree_view(pane_group_id)
     }
 
-    pub fn active_view(&self) -> ToolPanelView {
-        self.active_view.get()
+    pub fn active_view(&self) -> Option<ToolPanelView> {
+        self.active_view
+            .as_ref()
+            .map(active_view_state::ActiveViewState::get)
     }
 
     pub fn is_warp_drive_active(&self) -> bool {
-        self.active_view.get() == ToolPanelView::WarpDrive
+        self.active_view() == Some(ToolPanelView::WarpDrive)
     }
 
     pub fn is_file_tree_active(&self) -> bool {
-        self.active_view.get() == ToolPanelView::ProjectExplorer
+        self.active_view() == Some(ToolPanelView::ProjectExplorer)
     }
 
     pub fn warp_drive_view(&self) -> &ViewHandle<DrivePanel> {
@@ -552,10 +560,17 @@ impl LeftPanelView {
 
     pub fn restore_active_view_from_snapshot(
         &mut self,
-        view: ToolPanelView,
+        view: Option<ToolPanelView>,
         ctx: &mut ViewContext<Self>,
     ) {
-        active_view_state::set(self, view, ctx);
+        if let Some(view) = view {
+            active_view_state::set(self, view, ctx);
+        } else {
+            self.active_view = None;
+            self.update_button_active_states();
+            self.update_active_file_tree_subscription_state(ctx);
+            ctx.notify();
+        }
     }
 
     /// Updates the active pane group ID so we filter events correctly.
@@ -649,8 +664,8 @@ impl LeftPanelView {
     }
 
     pub fn focus_active_view_on_entry(&mut self, ctx: &mut ViewContext<Self>) {
-        match self.active_view.get() {
-            ToolPanelView::ProjectExplorer => {
+        match self.active_view() {
+            Some(ToolPanelView::ProjectExplorer) => {
                 if let Some(file_tree_view) = self.active_file_tree_view(ctx) {
                     file_tree_view.update(ctx, |view, ctx| {
                         view.on_left_panel_focused(ctx);
@@ -658,7 +673,7 @@ impl LeftPanelView {
                     ctx.focus(&file_tree_view);
                 }
             }
-            ToolPanelView::GlobalSearch { entry_focus } => {
+            Some(ToolPanelView::GlobalSearch { entry_focus }) => {
                 if let Some(global_search_view) = self.active_global_search_view(ctx) {
                     global_search_view.update(ctx, |view, ctx| {
                         view.on_left_panel_focused(entry_focus, ctx);
@@ -673,17 +688,18 @@ impl LeftPanelView {
                     ctx,
                 );
             }
-            ToolPanelView::WarpDrive => {
+            Some(ToolPanelView::WarpDrive) => {
                 ctx.focus(&self.warp_drive_view);
                 self.warp_drive_view.update(ctx, |view, ctx| {
                     view.reset_focused_index_in_warp_drive(true, ctx);
                 });
             }
-            ToolPanelView::ConversationListView => {
+            Some(ToolPanelView::ConversationListView) => {
                 self.conversation_list_view.update(ctx, |view, ctx| {
                     view.on_left_panel_focused(ctx);
                 });
             }
+            None => {}
         }
     }
 
@@ -824,17 +840,16 @@ impl LeftPanelView {
     }
 
     fn update_button_active_states(&mut self) {
+        let active_view = self.active_view();
         for button in &mut self.toolbelt_buttons {
             button.render_with_active_state = match &button.action {
-                LeftPanelAction::ProjectExplorer => {
-                    self.active_view.get() == ToolPanelView::ProjectExplorer
-                }
+                LeftPanelAction::ProjectExplorer => active_view == Some(ToolPanelView::ProjectExplorer),
                 LeftPanelAction::GlobalSearch { .. } => {
-                    matches!(self.active_view.get(), ToolPanelView::GlobalSearch { .. })
+                    matches!(active_view, Some(ToolPanelView::GlobalSearch { .. }))
                 }
-                LeftPanelAction::WarpDrive => self.active_view.get() == ToolPanelView::WarpDrive,
+                LeftPanelAction::WarpDrive => active_view == Some(ToolPanelView::WarpDrive),
                 LeftPanelAction::ConversationListView => {
-                    self.active_view.get() == ToolPanelView::ConversationListView
+                    active_view == Some(ToolPanelView::ConversationListView)
                 }
             };
         }
@@ -938,10 +953,10 @@ impl LeftPanelView {
                 }
             }
             LeftPanelAction::GlobalSearch { entry_focus } => {
-                let was_active = self.active_view.get()
-                    == ToolPanelView::GlobalSearch {
+                let was_active = self.active_view()
+                    == Some(ToolPanelView::GlobalSearch {
                         entry_focus: *entry_focus,
-                    };
+                    });
                 active_view_state::set(
                     self,
                     ToolPanelView::GlobalSearch {
@@ -954,6 +969,13 @@ impl LeftPanelView {
                 }
             }
             LeftPanelAction::WarpDrive => {
+                if !self
+                    .toolbelt_buttons
+                    .iter()
+                    .any(|button| matches!(button.action, LeftPanelAction::WarpDrive))
+                {
+                    return;
+                }
                 active_view_state::set(self, ToolPanelView::WarpDrive, ctx);
                 if force_open {
                     send_telemetry_from_ctx!(
@@ -981,7 +1003,7 @@ impl LeftPanelView {
     }
 
     pub fn on_left_panel_visibility_changed(&self, is_now_open: bool, ctx: &mut ViewContext<Self>) {
-        if ToolPanelView::ConversationListView == self.active_view.get() {
+        if self.active_view() == Some(ToolPanelView::ConversationListView) {
             self.on_conversation_list_view_visibility_changed(is_now_open, ctx);
         }
 
@@ -1014,7 +1036,7 @@ impl LeftPanelView {
         };
 
         let is_visible = active_pane_group.as_ref(ctx).left_panel_open
-            && self.active_view.get() == ToolPanelView::ProjectExplorer;
+            && self.active_view() == Some(ToolPanelView::ProjectExplorer);
 
         if let Some(file_tree_view) = self
             .working_directories_model
@@ -1063,19 +1085,20 @@ impl View for LeftPanelView {
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
         // Focus the active tool panel view on-left-panel-focus.
         if focus_ctx.is_self_focused() {
-            match self.active_view.get() {
-                ToolPanelView::ProjectExplorer => {
+            match self.active_view() {
+                Some(ToolPanelView::ProjectExplorer) => {
                     if let Some(view) = self.active_file_tree_view(ctx) {
                         ctx.focus(&view);
                     }
                 }
-                ToolPanelView::GlobalSearch { .. } => {
+                Some(ToolPanelView::GlobalSearch { .. }) => {
                     if let Some(view) = self.active_global_search_view(ctx) {
                         ctx.focus(&view);
                     }
                 }
-                ToolPanelView::WarpDrive => ctx.focus(&self.warp_drive_view),
-                ToolPanelView::ConversationListView => ctx.focus(&self.conversation_list_view),
+                Some(ToolPanelView::WarpDrive) => ctx.focus(&self.warp_drive_view),
+                Some(ToolPanelView::ConversationListView) => ctx.focus(&self.conversation_list_view),
+                None => {}
             }
         }
     }
@@ -1111,8 +1134,8 @@ impl View for LeftPanelView {
             None
         };
 
-        let content_area: Box<dyn Element> = match self.active_view.get() {
-            ToolPanelView::ProjectExplorer => {
+        let content_area: Box<dyn Element> = match self.active_view() {
+            Some(ToolPanelView::ProjectExplorer) => {
                 if let Some(file_tree_view) = self.active_file_tree_view(app) {
                     Shrinkable::new(
                         1.0,
@@ -1126,7 +1149,7 @@ impl View for LeftPanelView {
                     Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish()
                 }
             }
-            ToolPanelView::GlobalSearch { .. } => {
+            Some(ToolPanelView::GlobalSearch { .. }) => {
                 if let Some(global_search_view) = self.active_global_search_view(app) {
                     Shrinkable::new(
                         1.0,
@@ -1137,7 +1160,7 @@ impl View for LeftPanelView {
                     Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish()
                 }
             }
-            ToolPanelView::WarpDrive => Shrinkable::new(
+            Some(ToolPanelView::WarpDrive) => Shrinkable::new(
                 1.0,
                 Container::new(ChildView::new(&self.warp_drive_view).finish())
                     .with_padding_left(2.)
@@ -1145,9 +1168,10 @@ impl View for LeftPanelView {
                     .finish(),
             )
             .finish(),
-            ToolPanelView::ConversationListView => {
+            Some(ToolPanelView::ConversationListView) => {
                 Shrinkable::new(1.0, ChildView::new(&self.conversation_list_view).finish()).finish()
             }
+            None => Shrinkable::new(1.0, Container::new(Empty::new().finish()).finish()).finish(),
         };
 
         let panel_content = Container::new({

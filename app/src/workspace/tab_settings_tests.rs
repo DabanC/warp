@@ -65,6 +65,12 @@ fn header_toolbar_chip_selection_default_contains_code_review() {
 }
 
 #[test]
+fn header_toolbar_chip_selection_default_excludes_cloud_agent_management() {
+    let config = HeaderToolbarChipSelection::Default;
+    assert!(!config.contains_item(&HeaderToolbarItemKind::AgentManagement));
+}
+
+#[test]
 fn header_toolbar_chip_selection_custom_without_code_review_reports_absent() {
     let config = HeaderToolbarChipSelection::Custom {
         left: vec![

@@ -64,8 +64,8 @@ AUTH_ACCOUNT_TARGETS=("app/src/auth" "app/src/root_view.rs" "app/src/workspace/g
 AUTH_ACCOUNT_FORBIDDEN_REGEX='(createAnonymousUser|create_anonymous_user|debug_create_anonymous_user|workspace:debug_create_anonymous_user|Authenticating via API key|WARP_USER_SECRET|PersistedUser::from_secure_storage|/signup/remote|/login/remote|/upgrade\?|/login_options/|/link_sso|UserInitiatedLogOut|LogOutModalShown|LoggedOutStartup|determine_and_report)'
 ONBOARDING_WELCOME_LOGIN_TARGET="crates/onboarding/src/slides/intro_slide.rs"
 ONBOARDING_WELCOME_LOGIN_FORBIDDEN_REGEX='(Already have an account\?|"Log in"|IntroSlideEvent|LoginClicked|LoginRequested|WelcomeLoginClicked)'
-LOCAL_ONLY_UI_TARGETS=("app/src/settings_view/mod.rs" "app/src/settings_view/ai_page.rs" "app/src/drive/settings.rs" "app/src/drive/index.rs")
-LOCAL_ONLY_UI_FORBIDDEN_REGEX='(SettingsNavItem::Page\(SettingsSection::Account\)|SettingsNavItem::Page\(SettingsSection::BillingAndUsage\)|SettingsNavItem::Page\(SettingsSection::Teams\)|SettingsNavItem::Page\(SettingsSection::Warpify\)|SettingsNavItem::Page\(SettingsSection::Referrals\)|SettingsNavItem::Page\(SettingsSection::SharedBlocks\)|SettingsNavItem::Page\(SettingsSection::WarpDrive\)|"Cloud platform"|CloudHandoffWidget::default\(\)|FeatureFlag::CustomInferenceEndpoints\.is_enabled\(\)|sections\.insert\([^)]*DriveIndexSection::(CreateATeam|JoinTeam)|Collaborate with .* teammates already on Warp|Upgrade to the Build plan|Ask your team'"'"'s admin to upgrade to the Build plan|to use your own API keys\.|Create an account"|Warp credit fallback|Cloud handoff|Cloud Handoff|Auto-handoff before sleep|Use & to trigger handoff|Share commands & knowledge with your teammates\.|Create team)'
+LOCAL_ONLY_UI_TARGETS=("app/src/settings_view/mod.rs" "app/src/settings_view/ai_page.rs" "app/src/drive/settings.rs" "app/src/drive/index.rs" "app/src/workspace/view.rs" "app/src/workspace/view/left_panel.rs" "app/src/workspace/header_toolbar_item.rs")
+LOCAL_ONLY_UI_FORBIDDEN_REGEX='(SettingsNavItem::Page\(SettingsSection::Account\)|SettingsNavItem::Page\(SettingsSection::BillingAndUsage\)|SettingsNavItem::Page\(SettingsSection::Teams\)|SettingsNavItem::Page\(SettingsSection::Warpify\)|SettingsNavItem::Page\(SettingsSection::Referrals\)|SettingsNavItem::Page\(SettingsSection::SharedBlocks\)|SettingsNavItem::Page\(SettingsSection::WarpDrive\)|"Cloud platform"|CloudHandoffWidget::default\(\)|FeatureFlag::CustomInferenceEndpoints\.is_enabled\(\)|FeatureFlag::AgentManagementView\.is_enabled\(\)|sections\.insert\([^)]*DriveIndexSection::(CreateATeam|JoinTeam)|Collaborate with .* teammates already on Warp|Upgrade to the Build plan|Ask your team'"'"'s admin to upgrade to the Build plan|to use your own API keys\.|Create an account"|Warp credit fallback|Cloud handoff|Cloud Handoff|Auto-handoff before sleep|Use & to trigger handoff|Share commands & knowledge with your teammates\.|Create team|unwrap_or\(ToolPanelView::WarpDrive\)|PaletteMode::WarpDrive => self\.open_warp_drive_palette\(ctx\)|ToggleUserMenu => self\.toggle_user_menu\(ctx\)|Container::new\(self\.render_avatar_button|self\.current_workspace_state\.is_warp_drive_open = true)'
 
 scan_forbidden() {
   local scan_root="$1"
@@ -208,7 +208,7 @@ run_self_test() {
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
-  mkdir -p "$tmp/app/src" "$tmp/crates/ai" "$tmp/app/src/settings_view" "$tmp/app/src/drive"
+  mkdir -p "$tmp/app/src" "$tmp/crates/ai" "$tmp/app/src/settings_view" "$tmp/app/src/drive" "$tmp/app/src/workspace/view" "$tmp/app/src/workspace"
 
   cat > "$tmp/app/src/local.rs" <<'PASS_FIXTURE'
 pub fn local_terminal_marker() -> &'static str {
@@ -273,6 +273,17 @@ LOCAL_AI_PASS_FIXTURE
   cat > "$tmp/app/src/drive/settings.rs" <<'LOCAL_DRIVE_PASS_FIXTURE'
 pub fn is_warp_drive_enabled() -> bool { false }
 LOCAL_DRIVE_PASS_FIXTURE
+  cat > "$tmp/app/src/workspace/header_toolbar_item.rs" <<'LOCAL_TOOLBAR_PASS_FIXTURE'
+pub fn default_left() -> Vec<HeaderToolbarItemKind> { vec![Self::TabsPanel, Self::ToolsPanel] }
+pub fn is_supported(&self) -> bool { matches!(self, Self::TabsPanel | Self::ToolsPanel) }
+LOCAL_TOOLBAR_PASS_FIXTURE
+  cat > "$tmp/app/src/workspace/view.rs" <<'LOCAL_WORKSPACE_PASS_FIXTURE'
+ToggleUserMenu => self.show_settings(ctx),
+if WarpDriveSettings::is_warp_drive_enabled(ctx) { self.open_left_panel_view(&LeftPanelAction::WarpDrive, ctx); }
+LOCAL_WORKSPACE_PASS_FIXTURE
+  cat > "$tmp/app/src/workspace/view/left_panel.rs" <<'LOCAL_LEFT_PANEL_PASS_FIXTURE'
+let active_view = views.first().copied();
+LOCAL_LEFT_PANEL_PASS_FIXTURE
 
   if ! scan_local_only_ui_forbidden "$tmp" "${LOCAL_ONLY_UI_TARGETS[@]}"; then
     local_only_die "self-test local-only UI scan reported clean fixture as forbidden"
@@ -287,6 +298,15 @@ LOCAL_AI_FAIL_FIXTURE
 sections.insert(0, DriveIndexSection::CreateATeam);
 pub const JOIN: &str = "Collaborate with 1 of your teammates already on Warp.";
 LOCAL_DRIVE_FAIL_FIXTURE
+  cat > "$tmp/app/src/workspace/view/left_panel.rs" <<'LOCAL_LEFT_PANEL_FAIL_FIXTURE'
+let active_view = views.first().copied().unwrap_or(ToolPanelView::WarpDrive);
+LOCAL_LEFT_PANEL_FAIL_FIXTURE
+  cat > "$tmp/app/src/workspace/view.rs" <<'LOCAL_WORKSPACE_FAIL_FIXTURE'
+PaletteMode::WarpDrive => self.open_warp_drive_palette(ctx),
+ToggleUserMenu => self.toggle_user_menu(ctx),
+Container::new(self.render_avatar_button(appearance));
+self.current_workspace_state.is_warp_drive_open = true;
+LOCAL_WORKSPACE_FAIL_FIXTURE
 
   if scan_local_only_ui_forbidden "$tmp" "${LOCAL_ONLY_UI_TARGETS[@]}"; then
     local_only_die "self-test local-only UI fail fixture was not reported as forbidden"
