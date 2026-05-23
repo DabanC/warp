@@ -2946,15 +2946,11 @@ impl RootView {
                 // entrypoint (i.e. we're already in the `Terminal` state).
                 Self::sync_local_onboarding_to_server(&auth_state, ctx);
 
-                // If the user needs SSO after auth is complete, no matter what their current state is,
-                // we need to block their access to the rest of the app.
                 if auth_state.needs_sso_link().unwrap_or(false) {
-                    self.show_needs_sso_link_view(
-                        auth_state.user_email().unwrap_or_default().clone(),
-                        ctx,
-                    );
-                } else if let AuthOnboardingState::Auth(_)
-                | AuthOnboardingState::ConfirmIncomingAuth(_) =
+                    log::info!("Ignoring Warp account SSO-link requirement in local-only build");
+                }
+
+                if let AuthOnboardingState::Auth(_) | AuthOnboardingState::ConfirmIncomingAuth(_) =
                     &self.auth_onboarding_state
                 {
                     self.auth_view.update(ctx, |auth_view, ctx| {
@@ -2969,11 +2965,7 @@ impl RootView {
                     self.start_pending_tutorial(ctx);
                 } else if let AuthOnboardingState::NeedsSsoLink { .. } = &self.auth_onboarding_state
                 {
-                    // We should be able to access their SSO state; if not, default to true,
-                    // since we should err on the side of them _not_ being able to use Warp.
-                    if auth_state.needs_sso_link() == Some(false) {
-                        self.auth_onboarding_state.complete_sso_link(ctx);
-                    }
+                    self.auth_onboarding_state.complete_sso_link(ctx);
                 }
 
                 #[cfg(target_family = "wasm")]

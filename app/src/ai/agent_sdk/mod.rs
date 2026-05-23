@@ -18,7 +18,6 @@ use crate::ai::agent_sdk::mcp_config::build_mcp_servers_from_specs;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::aws_credentials::refresh_aws_credentials;
 use crate::ai::llms::LLMId;
-use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
 use crate::cloud_object::model::persistence::CloudModel;
 use crate::server::server_api::ai::AIClient;
 use crate::workflows::workflow::Workflow;
@@ -1413,9 +1412,9 @@ fn command_requires_auth(command: &CliCommand) -> bool {
 
 /// Launch a CLI command, checking authentication first if needed.
 ///
-/// If auth is not required, dispatches the command immediately.
-/// If auth is required and the user is logged in, triggers a user refresh
-/// before launching the command.
+/// If auth is not required, dispatches the command immediately. If auth is
+/// required, the local-only fork treats the local installation identity as
+/// ready and does not wait for a Warp account refresh event.
 fn launch_command(
     ctx: &mut AppContext,
     command: CliCommand,
@@ -1423,57 +1422,17 @@ fn launch_command(
 ) -> anyhow::Result<()> {
     let requires_auth = command_requires_auth(&command);
 
-    if !requires_auth {
-        return dispatch_command(ctx, command, global_options);
+    if requires_auth {
+        let cli_name = warp_cli::binary_name().unwrap_or_else(|| "warp".to_string());
+        let auth_state = AuthStateProvider::handle(ctx).as_ref(ctx).get();
+        if !auth_state.is_logged_in() {
+            return Err(anyhow::anyhow!(
+                "No local installation identity is available. Restart Warp and try `{cli_name}` again."
+            ));
+        }
     }
 
-    let cli_name = warp_cli::binary_name().unwrap_or_else(|| "warp".to_string());
-
-    let auth_state = AuthStateProvider::handle(ctx).as_ref(ctx).get();
-    if !auth_state.is_logged_in() {
-        return Err(anyhow::anyhow!(
-            "You are not logged in - please log in with `{cli_name} login` to continue."
-        ));
-    }
-
-    // User is logged in — subscribe to auth events, trigger a refresh, and wait
-    // for the result before running the command.
-    let mut dispatched = false;
-    ctx.subscribe_to_model(&AuthManager::handle(ctx), move |_, event, ctx| {
-        if dispatched {
-            return;
-        }
-        match event {
-            AuthManagerEvent::AuthComplete => {
-                dispatched = true;
-                if let Err(err) = dispatch_command(ctx, command.clone(), global_options.clone()) {
-                    report_fatal_error(err, ctx);
-                }
-            }
-            AuthManagerEvent::NeedsReauth => {
-                dispatched = true;
-                let auth_state = AuthStateProvider::handle(ctx).as_ref(ctx).get();
-                let message = if auth_state.is_api_key_authenticated() {
-                    "Your API key is invalid. Please provide a valid key via '--api-key' or the WARP_API_KEY environment variable.".to_string()
-                } else {
-                    format!("Your credentials are invalid. Please log in again with `{cli_name} login`.")
-                };
-                report_fatal_error(anyhow::anyhow!(message), ctx);
-            }
-            AuthManagerEvent::AuthFailed(err) => {
-                dispatched = true;
-                report_fatal_error(anyhow::anyhow!("Authentication failed: {err:#}"), ctx);
-            }
-            _ => {}
-        }
-    });
-
-    // Trigger the user refresh - the subscription above will handle the result.
-    AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-        auth_manager.refresh_user(ctx);
-    });
-
-    Ok(())
+    dispatch_command(ctx, command, global_options)
 }
 
 /// Check if we're running within Warp (for example, if this is an invocation of the Warp CLI
