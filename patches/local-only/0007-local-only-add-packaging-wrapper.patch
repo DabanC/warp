@@ -1,7 +1,7 @@
 From 1762e960a1a72947eedd3eb9eeab61508d036da4 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Fri, 22 May 2026 01:03:13 +0800
-Subject: [PATCH 07/19] local-only: add packaging wrapper
+Subject: [PATCH 07/20] local-only: add packaging wrapper
 
 ---
  script/local-only/package       | 83 +++++++++++++++++++++++++++++++++
