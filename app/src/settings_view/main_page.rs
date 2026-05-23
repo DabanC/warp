@@ -274,7 +274,6 @@ impl AccountWidget {
         &self,
         profile_image_source: Option<&AssetSource>,
         auth_state: &AuthState,
-        app: &AppContext,
         appearance: &Appearance,
     ) -> Box<dyn Element> {
         let mut user_info = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
@@ -406,7 +405,6 @@ impl SettingsWidget for AccountWidget {
             self.render_account_info(
                 profile_image_source.as_ref(),
                 view.auth_state.as_ref(),
-                app,
                 appearance,
             )
         };
