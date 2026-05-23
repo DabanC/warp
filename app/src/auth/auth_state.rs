@@ -114,8 +114,8 @@ impl AuthState {
     }
 
     /// Creates local-only auth state. The local fork does not load Warp account
-    /// credentials, API keys for Warp auth, Firebase tokens, `WARP_USER_SECRET`,
-    /// or persisted secure-storage users during startup.
+    /// credentials, API keys for Warp auth, Firebase tokens, environment-provided
+    /// account secrets, or persisted secure-storage users during startup.
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub fn initialize(ctx: &AppContext, api_key: Option<String>) -> Self {
         if api_key.is_some() {
@@ -537,10 +537,9 @@ mod local_only_tests {
 
     #[test]
     fn local_only_state_has_user_without_remote_credentials() {
-        let state = AuthState::new_local_for_test(Uuid::parse_str(
-            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        )
-        .expect("valid uuid"));
+        let state = AuthState::new_local_for_test(
+            Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").expect("valid uuid"),
+        );
 
         assert!(state.is_logged_in());
         assert!(!state.is_anonymous_or_logged_out());
@@ -558,10 +557,9 @@ mod local_only_tests {
 
     #[test]
     fn local_only_persist_action_does_not_touch_secure_storage() {
-        let state = AuthState::new_local_for_test(Uuid::parse_str(
-            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        )
-        .expect("valid uuid"));
+        let state = AuthState::new_local_for_test(
+            Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").expect("valid uuid"),
+        );
 
         assert!(matches!(state.persist_action(), PersistAction::DoNothing));
     }

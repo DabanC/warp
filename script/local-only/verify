@@ -60,6 +60,8 @@ local_only_require_cmd rg
 FORBIDDEN_REGEX='(app\.warp\.dev|api\.warp\.dev|graphql/v2|stripeBillingPortal|freeAvailableModels|GetRequestLimitInfo|GetAiOveragesForWorkspace|createAnonymousUser|create_anonymous_user|Rudder|rudder|Sentry|sentry|crash_reporting|crash reporting|remote config|feature flag fetch|warp_server_client|warp_graphql|firebase|managed_secrets|BillingMetadata|CustomerType|DelinquencyStatus)'
 REQUIRED_REGEX='(api key|API key|ApiKey|base_url|Base URL|base URL|custom endpoint|custom_endpoint)'
 SCAN_TARGETS=("app/src" "crates" "Cargo.toml" "app/Cargo.toml")
+AUTH_ACCOUNT_TARGETS=("app/src/auth" "app/src/root_view.rs" "app/src/workspace/global_actions.rs" "app/src/app_menus.rs" "app/src/lib.rs")
+AUTH_ACCOUNT_FORBIDDEN_REGEX='(createAnonymousUser|create_anonymous_user|debug_create_anonymous_user|workspace:debug_create_anonymous_user|Authenticating via API key|WARP_USER_SECRET|PersistedUser::from_secure_storage|/signup/remote|/login/remote|/upgrade\?|/login_options/|/link_sso|UserInitiatedLogOut|LogOutModalShown|LoggedOutStartup|determine_and_report)'
 
 scan_forbidden() {
   local scan_root="$1"
@@ -103,6 +105,40 @@ scan_required_ai_config() {
   return 1
 }
 
+scan_auth_account_forbidden() {
+  local scan_root="$1"
+  shift
+  local -a targets=("$@")
+  local -a existing_targets=()
+
+  for target in "${targets[@]}"; do
+    if [[ -e "$scan_root/$target" ]]; then
+      existing_targets+=("$scan_root/$target")
+    fi
+  done
+
+  if [[ "${#existing_targets[@]}" -eq 0 ]]; then
+    echo "No auth/account scan targets exist under $scan_root"
+    return 0
+  fi
+
+  local rg_status
+  rg_status=0
+  rg -n --hidden --glob '!target/**' --glob '!.git/**' "$AUTH_ACCOUNT_FORBIDDEN_REGEX" "${existing_targets[@]}" || rg_status="$?"
+
+  case "$rg_status" in
+    0)
+      return 1
+      ;;
+    1)
+      return 0
+      ;;
+    *)
+      local_only_die "ripgrep auth/account scan failed with status $rg_status"
+      ;;
+  esac
+}
+
 run_self_test() {
   local_only_print_header "Running verifier self-test"
   local tmp
@@ -135,6 +171,18 @@ FAIL_FIXTURE
     local_only_die "self-test fail fixture was not reported as forbidden"
   fi
 
+  if ! scan_auth_account_forbidden "$tmp" "app/src"; then
+    local_only_die "self-test auth/account scan reported clean fixture as forbidden"
+  fi
+
+  cat > "$tmp/app/src/auth_prompt.rs" <<'AUTH_FAIL_FIXTURE'
+pub const SIGNUP_URL: &str = "/signup/remote";
+AUTH_FAIL_FIXTURE
+
+  if scan_auth_account_forbidden "$tmp" "app/src"; then
+    local_only_die "self-test auth/account fail fixture was not reported as forbidden"
+  fi
+
   if ! scan_required_ai_config "$tmp"; then
     local_only_die "self-test AI config fixture was not detected"
   fi
@@ -154,6 +202,11 @@ if [[ "$RUN_CARGO" == true ]]; then
 fi
 
 if [[ "$RUN_STATIC" == true ]]; then
+  local_only_print_header "Scanning local-only auth/account entry points"
+  if ! scan_auth_account_forbidden "$ROOT" "${AUTH_ACCOUNT_TARGETS[@]}"; then
+    local_only_die "forbidden auth/account entry points remain"
+  fi
+
   local_only_print_header "Scanning for forbidden cloud/account surfaces"
   if ! scan_forbidden "$ROOT" "${SCAN_TARGETS[@]}"; then
     local_only_die "forbidden cloud/account surfaces remain"
