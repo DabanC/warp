@@ -16,3 +16,4 @@
 0016-local-only-prune-anonymous-account-imports.patch
 0017-local-only-skip-startup-account-refresh.patch
 0018-local-only-guard-auth-account-entry-points.patch
+0019-local-only-disable-residual-account-ingress-paths.patch

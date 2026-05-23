@@ -1,7 +1,7 @@
 From 88112c6565ef2948425e4edd11cd6c3870d75359 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Fri, 22 May 2026 01:54:49 +0800
-Subject: [PATCH 09/18] local-only: expand auth account removal plan
+Subject: [PATCH 09/19] local-only: expand auth account removal plan
 
 ---
  ...6-05-21-local-only-auth-account-removal.md | 1537 ++++++++++++++++-
