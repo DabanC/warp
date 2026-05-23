@@ -154,7 +154,6 @@ const HOVER_PREVIEW_Y_OFFSET: f32 = 0.;
 
 const CREATE_TEAM_ICON_WIDTH: f32 = 16.;
 const CREATE_TEAM_ICON_HEIGHT: f32 = 16.;
-const CREATE_TEAM_TEXT: &str = "Share commands & knowledge with your teammates.";
 
 const LOADING_ICON_WIDTH: f32 = 16.;
 const LOADING_ICON_HEIGHT: f32 = 16.;
@@ -650,23 +649,12 @@ impl DriveIndex {
                 .as_ref(ctx)
                 .num_trashed_cloud_objects_per_space(spaces.iter(), ctx),
         };
-        let mut sections = spaces
+        let sections = spaces
             .iter()
             .map(|space| DriveIndexSection::Space(*space))
             .collect::<Vec<_>>();
 
-        if !user_workspaces.as_ref(ctx).has_teams() {
-            if user_workspaces
-                .as_ref(ctx)
-                .total_teammates_in_joinable_teams()
-                > 0
-            {
-                sections.insert(0, DriveIndexSection::JoinTeam);
-                sections.insert(1, DriveIndexSection::CreateATeam);
-            } else {
-                sections.insert(0, DriveIndexSection::CreateATeam);
-            }
-        }
+        // Local-only builds remove team creation and join prompts from Warp Drive.
 
         // Item UI state is attached by index, not by id, so this is re-initialized whenever there's any type of change
         let item_mouse_states = num_cloud_objects_per_space
@@ -1719,26 +1707,8 @@ impl DriveIndex {
                     app,
                 ))
             }
-            (DriveIndexVariant::MainIndex, DriveIndexSection::CreateATeam) => {
-                if self.is_online(app) {
-                    Some(self.render_team_section_header(CREATE_TEAM_TEXT.to_owned(), appearance))
-                } else {
-                    None
-                }
-            }
-            (DriveIndexVariant::MainIndex, DriveIndexSection::JoinTeam) => {
-                if self.is_online(app) {
-                    let join_teams_text = format!(
-                        "Collaborate with {} of your teammates already on Warp.",
-                        UserWorkspaces::handle(app)
-                            .as_ref(app)
-                            .total_teammates_in_joinable_teams()
-                    );
-                    Some(self.render_team_section_header(join_teams_text, appearance))
-                } else {
-                    None
-                }
-            }
+            (DriveIndexVariant::MainIndex, DriveIndexSection::CreateATeam) => None,
+            (DriveIndexVariant::MainIndex, DriveIndexSection::JoinTeam) => None,
             (DriveIndexVariant::Trash, DriveIndexSection::Space(space)) => {
                 let title_font_color = self
                     .font_color_based_on_focused_state(appearance, WarpDriveItemId::Space(space));
@@ -2135,7 +2105,7 @@ impl DriveIndex {
         appearance: &Appearance,
         app: &AppContext,
     ) -> Box<dyn Element> {
-        let button_text = "Create team".to_owned();
+        let button_text = "".to_owned();
         let create_button = if UserWorkspaces::as_ref(app).total_teammates_in_joinable_teams() == 0
         {
             appearance
@@ -2273,18 +2243,8 @@ impl DriveIndex {
     ) -> Option<impl Iterator<Item = Box<dyn Element>>> {
         let mut rendered_space = vec![];
 
-        // Do not render "Create team" or "Join team" sections in the trash index
-        if (matches!(section, DriveIndexSection::CreateATeam)
-            || matches!(section, DriveIndexSection::JoinTeam))
-            && matches!(self.index_variant, DriveIndexVariant::Trash)
-        {
-            return None;
-        }
-
-        // Do not render "Join team" sections for anonymous users
-        if matches!(section, DriveIndexSection::JoinTeam)
-            && self.auth_state.is_anonymous_or_logged_out()
-        {
+        // Local-only builds do not render team creation or join sections.
+        if matches!(section, DriveIndexSection::CreateATeam | DriveIndexSection::JoinTeam) {
             return None;
         }
 

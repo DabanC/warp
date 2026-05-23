@@ -27,7 +27,7 @@ use crate::settings::{
     AIAutoDetectionEnabled, AICommandDenylist, AISettingsChangedEvent,
     AgentModeCodingPermissionsType, AgentModeCommandExecutionDenylist,
     AgentModeCommandExecutionPredicate, AgentModeQuerySuggestionsEnabled, AwsBedrockAutoLogin,
-    AwsBedrockCredentialsEnabled, CanUseWarpCreditsForFallback, CodeSettings,
+    AwsBedrockCredentialsEnabled, CodeSettings,
     CodebaseContextEnabled, FeedbackBundledSkillEnabled, FileBasedMcpEnabled,
     GitOperationsAutogenEnabled, IncludeAgentCommandsInHistory, IntelligentAutosuggestionsEnabled,
     MemoryEnabled, NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled,
@@ -1379,8 +1379,7 @@ impl AISettingsPageView {
         });
 
         // Custom inference
-        let custom_inference_controls_enabled =
-            is_any_ai_enabled && UserWorkspaces::as_ref(ctx).is_custom_inference_enabled(ctx);
+        let custom_inference_controls_enabled = is_any_ai_enabled;
         let custom_inference_add_button = ctx.add_typed_action_view(|_| {
             ActionButton::new("+ Add custom model", SecondaryTheme)
                 .with_size(ButtonSize::Small)
@@ -1620,9 +1619,7 @@ impl AISettingsPageView {
             .collect()
     }
     fn can_use_custom_inference_controls(app: &AppContext) -> bool {
-        FeatureFlag::CustomInferenceEndpoints.is_enabled()
-            && AISettings::as_ref(app).is_any_ai_enabled(app)
-            && UserWorkspaces::as_ref(app).is_custom_inference_enabled(app)
+        AISettings::as_ref(app).is_any_ai_enabled(app)
     }
 
     fn show_add_custom_endpoint_modal(&mut self, ctx: &mut ViewContext<Self>) {
@@ -1908,7 +1905,6 @@ impl AISettingsPageView {
                 {
                     widgets.push(Box::new(VoiceWidget::default()));
                 }
-                widgets.push(Box::new(CloudHandoffWidget::default()));
                 widgets.push(Box::new(CLIAgentWidget::default()));
                 widgets.push(Box::new(ApiKeysWidget::new(ctx)));
                 widgets.push(Box::new(AwsBedrockWidget::new(ctx)));
@@ -1950,7 +1946,6 @@ impl AISettingsPageView {
                 if voice_supported {
                     widgets.push(Box::new(VoiceWidget::default()));
                 }
-                widgets.push(Box::new(CloudHandoffWidget::default()));
                 widgets.push(Box::new(ApiKeysWidget::new(ctx)));
                 widgets.push(Box::new(AwsBedrockWidget::new(ctx)));
                 widgets.push(Box::new(AgentAttributionWidget::default()));
@@ -2621,7 +2616,6 @@ pub enum AISettingsPageAction {
     ToggleCLIAgentToolbar,
     ToggleUseAgentToolbar,
     ToggleVoiceInput,
-    ToggleCanUseWarpCreditsForFallback,
     HyperlinkClick(HyperlinkUrl),
     ToggleCodebaseContext,
     ToggleShowInputHintText,
@@ -3020,14 +3014,6 @@ impl TypedActionView for AISettingsPageView {
                         log::warn!("Failed to set value for Voice Input: {e:?}");
                     }
                 }
-                ctx.notify();
-            }
-            AISettingsPageAction::ToggleCanUseWarpCreditsForFallback => {
-                AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings
-                        .can_use_warp_credits_for_fallback
-                        .toggle_and_save_value(ctx));
-                });
                 ctx.notify();
             }
             AISettingsPageAction::HyperlinkClick(hyperlink) => {
@@ -6745,178 +6731,10 @@ impl SettingsWidget for CloudAgentComputerUseWidget {
     }
 }
 
-#[derive(Default)]
-struct CloudHandoffWidget {
-    handoff_toggle: SwitchStateHandle,
-    auto_handoff_on_sleep_toggle: SwitchStateHandle,
-    ampersand_toggle: SwitchStateHandle,
-}
-
-impl SettingsWidget for CloudHandoffWidget {
-    type View = AISettingsPageView;
-
-    fn search_terms(&self) -> &str {
-        "cloud handoff auto sleep ampersand & move to cloud local"
-    }
-
-    fn should_render(&self, _app: &AppContext) -> bool {
-        FeatureFlag::OzHandoff.is_enabled() && FeatureFlag::HandoffLocalCloud.is_enabled()
-    }
-
-    fn render(
-        &self,
-        _view: &Self::View,
-        appearance: &Appearance,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        use crate::settings::PrivacySettings;
-
-        let ai_settings = AISettings::as_ref(app);
-        let is_any_ai_enabled = ai_settings.is_any_ai_enabled(app);
-
-        let privacy = PrivacySettings::as_ref(app);
-        let cloud_convos_off = !privacy.is_cloud_conversation_storage_enabled
-            || matches!(
-                UserWorkspaces::as_ref(app).get_cloud_conversation_storage_enablement_setting(),
-                AdminEnablementSetting::Disable
-            );
-        let is_force_disabled = !is_any_ai_enabled || cloud_convos_off;
-
-        let tooltip_text = if cloud_convos_off {
-            "Cloud handoff requires cloud conversations to be enabled."
-        } else {
-            ""
-        };
-
-        let ui_builder = appearance.ui_builder();
-
-        let handoff_toggle = if is_force_disabled {
-            let mut builder = ui_builder.switch(self.handoff_toggle.clone()).check(false);
-            if !tooltip_text.is_empty() {
-                builder = builder.with_tooltip(TooltipConfig {
-                    text: tooltip_text.to_string(),
-                    styles: ui_builder.default_tool_tip_styles(),
-                });
-            }
-            builder.disable().build().finish()
-        } else {
-            ui_builder
-                .switch(self.handoff_toggle.clone())
-                .check(!*ai_settings.should_force_disable_cloud_handoff)
-                .build()
-                .on_click(move |ctx, _, _| {
-                    ctx.dispatch_typed_action(AISettingsPageAction::ToggleCloudHandoff);
-                })
-                .finish()
-        };
-
-        let handoff_row = build_toggle_element(
-            render_body_item_label::<AISettingsPageAction>(
-                "Cloud handoff".to_string(),
-                Some(styles::header_font_color(!is_force_disabled, app)),
-                None,
-                LocalOnlyIconState::Hidden,
-                ToggleState::Enabled,
-                appearance,
-            ),
-            handoff_toggle,
-            appearance,
-            None,
-        );
-
-        let mut column = Flex::column()
-            .with_child(render_separator(appearance))
-            .with_child(
-                build_sub_header(
-                    appearance,
-                    "Cloud Handoff",
-                    Some(styles::header_font_color(is_any_ai_enabled, app)),
-                )
-                .with_padding_bottom(HEADER_PADDING)
-                .finish(),
-            )
-            .with_child(handoff_row)
-            .with_child(render_ai_setting_description(
-                "Hand off local agent conversations to a cloud agent.",
-                !is_force_disabled,
-                app,
-            ));
-
-        if ai_settings.is_cloud_handoff_enabled(app) {
-            if ai_settings
-                .auto_handoff_on_sleep_enabled
-                .is_supported_on_current_platform()
-            {
-                let auto_handoff_on_sleep_toggle = ui_builder
-                    .switch(self.auto_handoff_on_sleep_toggle.clone())
-                    .check(*ai_settings.auto_handoff_on_sleep_enabled)
-                    .build()
-                    .on_click(move |ctx, _, _| {
-                        ctx.dispatch_typed_action(AISettingsPageAction::ToggleAutoHandoffOnSleep);
-                    })
-                    .finish();
-                let auto_handoff_on_sleep_row = build_toggle_element(
-                    render_body_item_label::<AISettingsPageAction>(
-                        "Auto-handoff before sleep".to_string(),
-                        Some(styles::header_font_color(true, app)),
-                        None,
-                        LocalOnlyIconState::Hidden,
-                        ToggleState::Enabled,
-                        appearance,
-                    ),
-                    auto_handoff_on_sleep_toggle,
-                    appearance,
-                    None,
-                );
-                column.add_child(auto_handoff_on_sleep_row);
-                column.add_child(render_ai_setting_description(
-                    "When macOS is about to sleep, automatically moves the most recently focused running local Warp Agent conversation to Cloud Mode so it can keep working.",
-                    true,
-                    app,
-                ));
-            }
-            let ampersand_toggle = ui_builder
-                .switch(self.ampersand_toggle.clone())
-                .check(!*ai_settings.should_force_disable_ampersand_handoff)
-                .build()
-                .on_click(move |ctx, _, _| {
-                    ctx.dispatch_typed_action(AISettingsPageAction::ToggleAmpersandHandoff);
-                })
-                .finish();
-
-            let ampersand_row = build_toggle_element(
-                render_body_item_label::<AISettingsPageAction>(
-                    "Use & to trigger handoff".to_string(),
-                    Some(styles::header_font_color(true, app)),
-                    None,
-                    LocalOnlyIconState::Hidden,
-                    ToggleState::Enabled,
-                    appearance,
-                ),
-                ampersand_toggle,
-                appearance,
-                None,
-            );
-
-            column.add_child(ampersand_row);
-            column.add_child(render_ai_setting_description(
-                "Type & as the first character to enter cloud handoff compose mode.",
-                true,
-                app,
-            ));
-        }
-
-        column.finish()
-    }
-}
-
 struct ApiKeysWidget {
     openai_api_key_editor: ViewHandle<EditorView>,
     anthropic_api_key_editor: ViewHandle<EditorView>,
     google_api_key_editor: ViewHandle<EditorView>,
-
-    can_use_warp_credits_for_fallback: SwitchStateHandle,
-    upgrade_highlight_index: HighlightedHyperlink,
 
     custom_inference_info_tooltip: MouseStateHandle,
     custom_inference_terms_index: HighlightedHyperlink,
@@ -6928,7 +6746,6 @@ impl ApiKeysWidget {
         let ai_settings = AISettings::as_ref(ctx);
         let workspace_handle = UserWorkspaces::handle(ctx);
         let is_any_ai_enabled = ai_settings.is_any_ai_enabled(ctx);
-        let is_byo_enabled = workspace_handle.as_ref(ctx).is_byo_api_key_enabled(ctx);
 
         let ApiKeys {
             openai: openai_key,
@@ -6966,7 +6783,7 @@ impl ApiKeysWidget {
                 });
                 AISettingsPageView::update_editor_interaction_state(
                     $editor.clone(),
-                    is_any_ai_enabled && is_byo_enabled,
+                    is_any_ai_enabled,
                     ctx,
                 );
                 ctx.subscribe_to_view(&$editor, |_, $editor, event, ctx| {
@@ -6979,23 +6796,9 @@ impl ApiKeysWidget {
                     }
                 });
                 let editor_clone = $editor.clone();
-                ctx.subscribe_to_model(&workspace_handle, move |_, workspace, event, ctx| {
+                ctx.subscribe_to_model(&workspace_handle, move |_, _workspace, event, ctx| {
                     if let UserWorkspacesEvent::TeamsChanged = event {
-                        let is_any_ai_enabled =
-                            AISettings::handle(ctx).as_ref(ctx).is_any_ai_enabled(ctx);
-                        let is_byo_enabled = workspace.as_ref(ctx).is_byo_api_key_enabled(ctx);
-                        let is_enabled = is_any_ai_enabled && is_byo_enabled;
-                        let has_key = !editor_clone.as_ref(ctx).is_empty(ctx);
-
-                        // If BYO is disabled, clear the API key from the editor and storage
-                        if !is_byo_enabled && has_key {
-                            editor_clone.update(ctx, |editor, ctx| {
-                                editor.set_buffer_text("", ctx);
-                            });
-                            ApiKeyManager::handle(ctx).update(ctx, |model, ctx| {
-                                model.$set_func(None, ctx);
-                            });
-                        }
+                        let is_enabled = AISettings::handle(ctx).as_ref(ctx).is_any_ai_enabled(ctx);
 
                         AISettingsPageView::update_editor_interaction_state(
                             editor_clone.clone(),
@@ -7026,9 +6829,6 @@ impl ApiKeysWidget {
             openai_api_key_editor,
             anthropic_api_key_editor,
             google_api_key_editor,
-
-            can_use_warp_credits_for_fallback: Default::default(),
-            upgrade_highlight_index: Default::default(),
 
             custom_inference_info_tooltip: Default::default(),
             custom_inference_terms_index: Default::default(),
@@ -7283,35 +7083,6 @@ impl ApiKeysWidget {
         }
         list.finish()
     }
-
-    fn render_warp_credit_fallback_toggle(
-        &self,
-        view: &AISettingsPageView,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        let ai_settings = AISettings::as_ref(app);
-
-        let toggle = render_ai_setting_toggle::<CanUseWarpCreditsForFallback>(
-            "Warp credit fallback",
-            AISettingsPageAction::ToggleCanUseWarpCreditsForFallback,
-            *ai_settings.can_use_warp_credits_for_fallback,
-            ai_settings.is_any_ai_enabled(app),
-            self.can_use_warp_credits_for_fallback.clone(),
-            &view.local_only_icon_tooltip_states,
-            app,
-        );
-
-        let description = render_ai_setting_description(
-            "When enabled, agent requests may be routed to one of Warp's provided models in the event of an error. Warp will prioritize using your API keys over your Warp credits.",
-            ai_settings.is_any_ai_enabled(app),
-            app,
-        );
-
-        Flex::column()
-            .with_child(toggle)
-            .with_child(description)
-            .finish()
-    }
 }
 
 impl SettingsWidget for ApiKeysWidget {
@@ -7329,182 +7100,76 @@ impl SettingsWidget for ApiKeysWidget {
     ) -> Box<dyn Element> {
         let ai_settings = AISettings::as_ref(app);
         let is_any_ai_enabled = ai_settings.is_any_ai_enabled(app);
-        let is_byo_enabled = UserWorkspaces::as_ref(app).is_byo_api_key_enabled(app);
-        let is_custom_inference_enabled =
-            UserWorkspaces::as_ref(app).is_custom_inference_enabled(app);
-        let provider_keys_enabled = is_any_ai_enabled && is_byo_enabled;
-        let custom_inference_controls_enabled = is_any_ai_enabled && is_custom_inference_enabled;
-        let custom_inference_flag_on = FeatureFlag::CustomInferenceEndpoints.is_enabled();
-        let show_custom_inference = custom_inference_flag_on && is_custom_inference_enabled;
-
+        let provider_keys_enabled = is_any_ai_enabled;
+        let custom_inference_controls_enabled = is_any_ai_enabled;
         let mut column = Flex::column().with_child(render_separator(appearance));
 
-        if show_custom_inference {
-            // Header row: "Custom inference" + info icon on left, "+ Add custom model" on right
-            let header_left = Flex::row()
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(
-                    build_sub_header(
-                        appearance,
-                        "Custom inference",
-                        Some(styles::header_font_color(
-                            custom_inference_controls_enabled,
-                            app,
-                        )),
-                    )
-                    .with_margin_bottom(0.)
-                    .finish(),
-                )
-                .with_child(self.render_custom_inference_info_icon(appearance))
-                .finish();
-
-            let header_row = Flex::row()
-                .with_main_axis_size(MainAxisSize::Max)
-                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-                .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(header_left)
-                .with_child(view.custom_inference_add_button.as_ref(app).render(app))
-                .finish();
-
-            column.add_child(
-                Container::new(header_row)
-                    .with_padding_bottom(HEADER_PADDING)
-                    .finish(),
-            );
-
-            // Description with Learn more link
-            column.add_child(self.render_custom_inference_description(app));
-        } else {
-            // Fallback: old "API Keys" header only
-            column.add_child(
+        // Header row: "Custom inference" + info icon on left, "+ Add custom model" on right.
+        // Local-only builds always expose custom endpoint configuration without a Warp plan.
+        let header_left = Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
                 build_sub_header(
                     appearance,
-                    "API Keys",
-                    Some(styles::header_font_color(is_any_ai_enabled, app)),
+                    "Custom inference",
+                    Some(styles::header_font_color(
+                        custom_inference_controls_enabled,
+                        app,
+                    )),
                 )
+                .with_margin_bottom(0.)
+                .finish(),
+            )
+            .with_child(self.render_custom_inference_info_icon(appearance))
+            .finish();
+
+        let header_row = Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(header_left)
+            .with_child(view.custom_inference_add_button.as_ref(app).render(app))
+            .finish();
+
+        column.add_child(
+            Container::new(header_row)
                 .with_padding_bottom(HEADER_PADDING)
                 .finish(),
-            );
-        }
+        );
+
+        // Description with Learn more link
+        column.add_child(self.render_custom_inference_description(app));
 
         // Provider key editors (always visible)
         column.add_child(self.render_provider_key_editors(appearance, provider_keys_enabled, app));
 
-        // Custom endpoints sub-label + list (only when flag on and endpoints non-empty)
-        if show_custom_inference {
-            let endpoints = &ApiKeyManager::as_ref(app).keys().custom_endpoints;
-            if !endpoints.is_empty() {
-                column.add_child(
-                    Container::new(
-                        Text::new_inline(
-                            "Custom endpoints",
-                            appearance.ui_font_family(),
-                            CONTENT_FONT_SIZE,
-                        )
-                        .with_color(
-                            styles::header_font_color(custom_inference_controls_enabled, app)
-                                .into(),
-                        )
-                        .with_style(Properties::default().weight(Weight::Semibold))
-                        .finish(),
-                    )
-                    .with_margin_top(16.)
-                    .with_margin_bottom(8.)
-                    .finish(),
-                );
-                column.add_child(self.render_custom_endpoints_list(
-                    view,
-                    appearance,
-                    custom_inference_controls_enabled,
-                    app,
-                ));
-            }
-        }
-
-        // Warp credit fallback toggle (shown when BYO or custom inference is enabled)
-        if is_byo_enabled || show_custom_inference {
+        // Custom endpoints sub-label + list.
+        let endpoints = &ApiKeyManager::as_ref(app).keys().custom_endpoints;
+        if !endpoints.is_empty() {
             column.add_child(
-                Container::new(self.render_warp_credit_fallback_toggle(view, app))
-                    .with_margin_top(16.)
+                Container::new(
+                    Text::new_inline(
+                        "Custom endpoints",
+                        appearance.ui_font_family(),
+                        CONTENT_FONT_SIZE,
+                    )
+                    .with_color(
+                        styles::header_font_color(custom_inference_controls_enabled, app)
+                            .into(),
+                    )
+                    .with_style(Properties::default().weight(Weight::Semibold))
                     .finish(),
+                )
+                .with_margin_top(16.)
+                .with_margin_bottom(8.)
+                .finish(),
             );
-        }
-
-        // Upgrade CTA if BYOK not enabled
-        if !is_byo_enabled {
-            let auth_state = AuthStateProvider::as_ref(app).get();
-            let upgrade_text_fragments = if let Some(team) =
-                UserWorkspaces::as_ref(app).current_team()
-            {
-                if team.billing_metadata.customer_type == CustomerType::Enterprise {
-                    vec![
-                        FormattedTextFragment::hyperlink("Contact sales", "mailto:sales@warp.dev"),
-                        FormattedTextFragment::plain_text(
-                            " to enable bringing your own API keys on your Enterprise plan.",
-                        ),
-                    ]
-                } else {
-                    let current_user_email = auth_state.user_email().unwrap_or_default();
-                    let has_admin_permissions = team.has_admin_permissions(&current_user_email);
-                    let upgrade_url = UserWorkspaces::upgrade_link_for_team(team.uid);
-                    if has_admin_permissions {
-                        vec![
-                            FormattedTextFragment::hyperlink(
-                                "Upgrade to the Build plan",
-                                upgrade_url,
-                            ),
-                            FormattedTextFragment::plain_text(" to use your own API keys."),
-                        ]
-                    } else {
-                        vec![FormattedTextFragment::plain_text(
-                            "Ask your team's admin to upgrade to the Build plan to use your own API keys.",
-                        )]
-                    }
-                }
-            } else if FeatureFlag::SoloUserByok.is_enabled()
-                && auth_state.is_anonymous_or_logged_out()
-            {
-                vec![
-                    FormattedTextFragment::hyperlink_action(
-                        "Create an account",
-                        AISettingsPageAction::SignupAnonymousUser,
-                    ),
-                    FormattedTextFragment::plain_text(" to use your own API keys."),
-                ]
-            } else {
-                let user_id = auth_state.user_id().unwrap_or_default();
-                let upgrade_url = UserWorkspaces::upgrade_link(user_id);
-                vec![
-                    FormattedTextFragment::hyperlink("Upgrade to the Build plan", upgrade_url),
-                    FormattedTextFragment::plain_text(" to use your own API keys."),
-                ]
-            };
-
-            let upgrade_text_element = FormattedTextElement::new(
-                FormattedText::new([FormattedTextLine::Line(upgrade_text_fragments)]),
-                appearance.ui_font_size(),
-                appearance.ui_font_family(),
-                appearance.ui_font_family(),
-                blended_colors::text_sub(appearance.theme(), appearance.theme().surface_1()),
-                self.upgrade_highlight_index.clone(),
-            )
-            .with_hyperlink_font_color(appearance.theme().accent().into_solid())
-            .register_default_click_handlers_with_action_support(|hyperlink_lens, event, ctx| {
-                match hyperlink_lens {
-                    HyperlinkLens::Url(url) => {
-                        ctx.open_url(url);
-                    }
-                    HyperlinkLens::Action(action_ref) => {
-                        if let Some(action) =
-                            action_ref.as_any().downcast_ref::<AISettingsPageAction>()
-                        {
-                            event.dispatch_typed_action(action.clone());
-                        }
-                    }
-                }
-            });
-
-            column.add_child(Container::new(upgrade_text_element.finish()).finish());
+            column.add_child(self.render_custom_endpoints_list(
+                view,
+                appearance,
+                custom_inference_controls_enabled,
+                app,
+            ));
         }
 
         column.finish()

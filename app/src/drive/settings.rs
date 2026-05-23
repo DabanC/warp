@@ -1,8 +1,6 @@
 use settings::{
     macros::define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud,
 };
-use warp_core::features::FeatureFlag;
-
 use super::DriveSortOrder;
 
 pub const HAS_AUTO_OPENED_WELCOME_FOLDER: &str = "HasAutoOpenedWelcomeFolder";
@@ -38,14 +36,9 @@ define_settings_group!(WarpDriveSettings, settings: [
 
 impl WarpDriveSettings {
     /// Returns whether Warp Drive should be considered enabled.
-    /// Returns `false` when the user is anonymous or fully logged out,
-    /// regardless of the user setting.
-    pub fn is_warp_drive_enabled(app: &warpui::AppContext) -> bool {
-        use warpui::SingletonEntity as _;
-        let is_anonymous_or_logged_out = FeatureFlag::SkipFirebaseAnonymousUser.is_enabled()
-            && crate::auth::AuthStateProvider::as_ref(app)
-                .get()
-                .is_anonymous_or_logged_out();
-        *Self::as_ref(app).enable_warp_drive && !is_anonymous_or_logged_out
+    /// Warp Drive is disabled in the local-only fork because it is a cloud/team
+    /// sharing surface.
+    pub fn is_warp_drive_enabled(_app: &warpui::AppContext) -> bool {
+        false
     }
 }

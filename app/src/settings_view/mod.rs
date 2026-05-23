@@ -225,7 +225,6 @@ pub enum SettingsViewEvent {
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SettingsSection {
     About,
-    #[default]
     Account,
     MCPServers,
     BillingAndUsage,
@@ -244,6 +243,7 @@ pub enum SettingsSection {
     /// External callers should navigate to a specific subpage (e.g. `WarpAgent`) instead.
     AI,
     // ── Agents umbrella subpages ──
+    #[default]
     WarpAgent,
     AgentProfiles,
     AgentMCPServers,
@@ -257,7 +257,7 @@ pub enum SettingsSection {
     // ── Code umbrella subpages ──
     CodeIndexing,
     EditorAndCodeReview,
-    // ── Cloud platform umbrella subpages ──
+    // ── Cloud-hosted platform pages (hidden from the local-only settings sidebar) ──
     CloudEnvironments,
     OzCloudAPIKeys,
 }
@@ -310,7 +310,7 @@ impl SettingsSection {
         matches!(self, Self::CodeIndexing | Self::EditorAndCodeReview)
     }
 
-    /// Returns true if this section is a subpage under the "Cloud platform" umbrella.
+    /// Returns true if this section is a subpage under the "cloud-hosted platform" umbrella.
     pub fn is_cloud_platform_subpage(&self) -> bool {
         matches!(self, Self::CloudEnvironments | Self::OzCloudAPIKeys)
     }
@@ -347,7 +347,7 @@ impl SettingsSection {
         &[Self::CodeIndexing, Self::EditorAndCodeReview]
     }
 
-    /// The ordered list of Cloud platform subpage sections.
+    /// The ordered list of cloud-hosted platform subpage sections.
     pub fn cloud_platform_subpages() -> &'static [Self] {
         &[Self::CloudEnvironments, Self::OzCloudAPIKeys]
     }
@@ -1225,13 +1225,13 @@ impl SettingsView {
 
         // Build sidebar nav items. AI page is presented as an "Agents" umbrella
         // with subpages; the actual AI SettingsPage is hidden from direct sidebar listing.
+        // Local-only builds hide account, billing, team, cloud platform, referral,
+        // Warpify, shared cloud block, and Warp Drive surfaces from Settings.
         let mut nav_items = vec![
-            SettingsNavItem::Page(SettingsSection::Account),
             SettingsNavItem::Umbrella(SettingsUmbrella::new(
                 "Agents",
                 SettingsSection::ai_subpages().to_vec(),
             )),
-            SettingsNavItem::Page(SettingsSection::BillingAndUsage),
             SettingsNavItem::Umbrella(SettingsUmbrella::new(
                 "Code",
                 vec![
@@ -1239,29 +1239,29 @@ impl SettingsView {
                     SettingsSection::EditorAndCodeReview,
                 ],
             )),
-            SettingsNavItem::Umbrella(SettingsUmbrella::new(
-                "Cloud platform",
-                vec![
-                    SettingsSection::CloudEnvironments,
-                    SettingsSection::OzCloudAPIKeys,
-                ],
-            )),
-            SettingsNavItem::Page(SettingsSection::Teams),
             SettingsNavItem::Page(SettingsSection::Appearance),
             SettingsNavItem::Page(SettingsSection::Features),
             SettingsNavItem::Page(SettingsSection::Keybindings),
-            SettingsNavItem::Page(SettingsSection::Warpify),
-            SettingsNavItem::Page(SettingsSection::Referrals),
-            SettingsNavItem::Page(SettingsSection::SharedBlocks),
-            SettingsNavItem::Page(SettingsSection::WarpDrive),
             SettingsNavItem::Page(SettingsSection::Privacy),
             SettingsNavItem::Page(SettingsSection::About),
         ];
 
-        // Resolve the initial page: map internal backing-page sections to their default subpage.
+        // Resolve the initial page: map internal backing-page sections to their default subpage,
+        // and route removed account/cloud sections to the local AI configuration page.
         let initial_page = match page {
             Some(SettingsSection::AI) => SettingsSection::WarpAgent,
             Some(SettingsSection::Code) => SettingsSection::CodeIndexing,
+            Some(
+                SettingsSection::Account
+                | SettingsSection::BillingAndUsage
+                | SettingsSection::CloudEnvironments
+                | SettingsSection::OzCloudAPIKeys
+                | SettingsSection::Teams
+                | SettingsSection::Warpify
+                | SettingsSection::Referrals
+                | SettingsSection::SharedBlocks
+                | SettingsSection::WarpDrive,
+            ) => SettingsSection::WarpAgent,
             Some(section) if section.is_subpage() => section,
             other => other.unwrap_or_default(),
         };
@@ -1891,10 +1891,20 @@ impl SettingsView {
         ctx: &mut ViewContext<Self>,
     ) {
         // Map internal backing-page sections to their default subpage.
-        // External callers should use subpage variants directly.
+        // External callers should use subpage variants directly. Local-only builds
+        // redirect removed account/cloud sections to local AI configuration.
         let section = match section {
             SettingsSection::AI => SettingsSection::WarpAgent,
             SettingsSection::Code => SettingsSection::CodeIndexing,
+            SettingsSection::Account
+            | SettingsSection::BillingAndUsage
+            | SettingsSection::CloudEnvironments
+            | SettingsSection::OzCloudAPIKeys
+            | SettingsSection::Teams
+            | SettingsSection::Warpify
+            | SettingsSection::Referrals
+            | SettingsSection::SharedBlocks
+            | SettingsSection::WarpDrive => SettingsSection::WarpAgent,
             other => other,
         };
 
@@ -1943,7 +1953,7 @@ impl SettingsView {
                     view.set_active_subpage(subpage, ctx);
                 });
             }
-            // Cloud platform subpages render their backing pages directly
+            // cloud-hosted platform subpages render their backing pages directly
             // (no subpage mode switch needed — the full page is shown).
 
             // Auto-expand the umbrella containing this subpage.
