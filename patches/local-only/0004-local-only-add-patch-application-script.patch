@@ -1,7 +1,7 @@
 From 44ffbde6f73b2356852052cf62de074153cbfa9c Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Thu, 21 May 2026 23:49:28 +0800
-Subject: [PATCH 04/24] local-only: add patch application script
+Subject: [PATCH 04/25] local-only: add patch application script
 
 ---
  script/local-only/apply-patches | 51 +++++++++++++++++++++++++++++++++
