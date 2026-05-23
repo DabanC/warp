@@ -1,7 +1,7 @@
 From 8fc14c68750612380dd8acf31c5ed9963cfa396d Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Fri, 22 May 2026 01:03:13 +0800
-Subject: [PATCH 05/20] local-only: document fork design and foundation plan
+Subject: [PATCH 05/21] local-only: document fork design and foundation plan
 
 ---
  .../2026-05-21-local-only-warp-foundation.md  | 1004 +++++++++++++++++

@@ -1,0 +1,51 @@
+From 51a6e9afb56a630d66de7aea8ba8b74f057b3d0f Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Sat, 23 May 2026 14:15:35 +0800
+Subject: [PATCH 21/21] local-only: clean account UI removal warnings
+
+---
+ app/src/settings_view/main_page.rs | 2 --
+ app/src/workspace/view.rs          | 7 +++----
+ 2 files changed, 3 insertions(+), 6 deletions(-)
+
+diff --git a/app/src/settings_view/main_page.rs b/app/src/settings_view/main_page.rs
+index 00be196a..65c7a36d 100644
+--- a/app/src/settings_view/main_page.rs
++++ b/app/src/settings_view/main_page.rs
+@@ -274,7 +274,6 @@ impl AccountWidget {
+         &self,
+         profile_image_source: Option<&AssetSource>,
+         auth_state: &AuthState,
+-        app: &AppContext,
+         appearance: &Appearance,
+     ) -> Box<dyn Element> {
+         let mut user_info = Flex::row().with_cross_axis_alignment(CrossAxisAlignment::Center);
+@@ -406,7 +405,6 @@ impl SettingsWidget for AccountWidget {
+             self.render_account_info(
+                 profile_image_source.as_ref(),
+                 view.auth_state.as_ref(),
+-                app,
+                 appearance,
+             )
+         };
+diff --git a/app/src/workspace/view.rs b/app/src/workspace/view.rs
+index 22675c8f..97c01600 100644
+--- a/app/src/workspace/view.rs
++++ b/app/src/workspace/view.rs
+@@ -296,10 +296,9 @@ use crate::server::cloud_objects::update_manager::{
+ use crate::server::ids::{ObjectUid, ServerId, SyncId};
+ use crate::server::server_api::{ServerApi, ServerApiEvent, ServerApiProvider, ServerTime};
+ use crate::server::telemetry::{
+-    AddTabWithShellSource, AnonymousUserSignupEntrypoint, CloseTarget, EnvVarTelemetryMetadata,
+-    FileTreeSource, KnowledgePaneEntrypoint, LaunchConfigUiLocation,
+-    MCPServerCollectionPaneEntrypoint, OpenedWarpAISource, SharingDialogSource, TierLimitHitEvent,
+-    WarpDriveSource,
++    AddTabWithShellSource, CloseTarget, EnvVarTelemetryMetadata, FileTreeSource,
++    KnowledgePaneEntrypoint, LaunchConfigUiLocation, MCPServerCollectionPaneEntrypoint,
++    OpenedWarpAISource, SharingDialogSource, TierLimitHitEvent, WarpDriveSource,
+ };
+ use crate::session_management::{SessionNavigationData, SessionSource, TabNavigationData};
+ use crate::settings::{
+-- 
+2.53.0
+

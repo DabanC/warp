@@ -1,7 +1,7 @@
 From 6a9f541080735faa8f28972434e676ef0c6115c6 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sat, 23 May 2026 12:30:39 +0800
-Subject: [PATCH 15/20] local-only: remove account logout entry points
+Subject: [PATCH 15/21] local-only: remove account logout entry points
 
 ---
  app/src/app_menus.rs                |  25 +--
