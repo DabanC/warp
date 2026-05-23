@@ -36,24 +36,6 @@ impl From<warp_graphql::queries::get_user::PrincipalType> for PrincipalType {
     }
 }
 
-impl TryFrom<warp_graphql::mutations::create_anonymous_user::AnonymousUserType>
-    for AnonymousUserType
-{
-    type Error = anyhow::Error;
-    fn try_from(
-        value: warp_graphql::mutations::create_anonymous_user::AnonymousUserType,
-    ) -> Result<Self, Self::Error> {
-        match value {
-            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::NativeClientAnonymousUser => Ok(AnonymousUserType::NativeClientAnonymousUser),
-            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::NativeClientAnonymousUserFeatureGated => Ok(AnonymousUserType::NativeClientAnonymousUserFeatureGated),
-            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::WebClientAnonymousUser => Ok(AnonymousUserType::WebClientAnonymousUser),
-            warp_graphql::mutations::create_anonymous_user::AnonymousUserType::Other(_) => {
-                Err(anyhow!("could not convert unknown anonymous user type"))
-            },
-        }
-    }
-}
-
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct PersonalObjectLimits {
     pub env_var_limit: usize,

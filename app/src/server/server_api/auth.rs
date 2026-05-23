@@ -808,6 +808,23 @@ struct UserProperties {
     api_key_owner_type: Option<OwnerType>,
 }
 
+fn convert_gql_anonymous_user_type(
+    anonymous_user_type: AnonymousUserType,
+) -> Option<crate::auth::user::AnonymousUserType> {
+    match anonymous_user_type {
+        AnonymousUserType::NativeClientAnonymousUser => {
+            Some(crate::auth::user::AnonymousUserType::NativeClientAnonymousUser)
+        }
+        AnonymousUserType::NativeClientAnonymousUserFeatureGated => {
+            Some(crate::auth::user::AnonymousUserType::NativeClientAnonymousUserFeatureGated)
+        }
+        AnonymousUserType::WebClientAnonymousUser => {
+            Some(crate::auth::user::AnonymousUserType::WebClientAnonymousUser)
+        }
+        AnonymousUserType::Other(_) => None,
+    }
+}
+
 impl From<GqlUserOutput> for UserProperties {
     fn from(user_output: GqlUserOutput) -> Self {
         let principal_type = user_output
@@ -850,7 +867,7 @@ impl From<GqlUserOutput> for UserProperties {
             local_id,
             metadata: user_profile.into(),
             needs_sso_link,
-            anonymous_user_type: anonymous_user_type.and_then(|t| t.try_into().ok()),
+            anonymous_user_type: anonymous_user_type.and_then(convert_gql_anonymous_user_type),
             is_on_work_domain,
             linked_at,
             personal_object_limits: personal_object_limits.and_then(|t| t.try_into().ok()),
