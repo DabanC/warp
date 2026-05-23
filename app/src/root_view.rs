@@ -1862,11 +1862,9 @@ impl RootView {
         }
     }
 
-    // Switch to Auth Screen while destroying Workspace.
-    fn log_out(&mut self, _: &(), ctx: &mut ViewContext<Self>) -> bool {
-        self.auth_onboarding_state.log_out(ctx);
-        ctx.focus_self();
-        ctx.notify();
+    // Logout is disabled because local-only builds do not maintain Warp account sessions.
+    fn log_out(&mut self, _: &(), _ctx: &mut ViewContext<Self>) -> bool {
+        log::info!("Ignoring root-view logout action in local-only build");
         true
     }
 
@@ -2304,22 +2302,8 @@ impl RootView {
     }
 
     #[allow(clippy::ptr_arg)]
-    fn handle_incoming_auth_url(&mut self, url: &Url, ctx: &mut ViewContext<Self>) -> bool {
-        match AuthRedirectPayload::from_url(url.clone()) {
-            Ok(redirect_payload) => {
-                AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
-                    auth_manager.initialize_user_from_auth_payload(redirect_payload, true, ctx);
-                });
-            }
-            Err(error) => {
-                log::error!("Unable to parse AuthResult from url: {error}");
-                self.auth_view.update(ctx, |view, ctx| {
-                    view.last_login_failure_reason =
-                        Some(LoginFailureReason::InvalidRedirectUrl { was_pasted: false });
-                    ctx.notify()
-                });
-            }
-        }
+    fn handle_incoming_auth_url(&mut self, _url: &Url, _ctx: &mut ViewContext<Self>) -> bool {
+        log::info!("Ignoring incoming Warp account auth URL in local-only build");
         true
     }
 

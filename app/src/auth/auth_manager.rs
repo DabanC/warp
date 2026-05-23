@@ -126,115 +126,30 @@ impl AuthManager {
         }
     }
 
-    /// Fetches and ultimately sets the user's auth state from an auth payload.
-    /// Typically, this function is triggered when a user clicks the intent link from their browser
-    /// back to Warp after login (or pastes the URL in the app).
+    /// Ignores browser auth redirects. Local-only builds never exchange redirect
+    /// payloads for Warp/Firebase account state.
     pub fn initialize_user_from_auth_payload(
         &mut self,
-        auth_payload: AuthRedirectPayload,
-        enforce_state_validation: bool,
-        ctx: &mut ModelContext<Self>,
+        _auth_payload: AuthRedirectPayload,
+        _enforce_state_validation: bool,
+        _ctx: &mut ModelContext<Self>,
     ) {
-        let AuthRedirectPayload {
-            refresh_token,
-            user_uid,
-            deleted_anonymous_user,
-            state,
-        } = auth_payload.clone();
-
-        if let Some(received_state) = &state {
-            if !self.consume_auth_state(received_state) {
-                if self.should_silently_ignore_stale_redirect(&user_uid) {
-                    log::info!(
-                        "Dropping auth redirect with stale state for already-logged-in user"
-                    );
-                    return;
-                }
-                ctx.emit(AuthManagerEvent::AuthFailed(
-                    UserAuthenticationError::InvalidStateParameter,
-                ));
-                return;
-            }
-        } else if enforce_state_validation {
-            if self.should_silently_ignore_stale_redirect(&user_uid) {
-                log::info!("Dropping auth redirect without state for already-logged-in user");
-                return;
-            }
-            ctx.emit(AuthManagerEvent::AuthFailed(
-                UserAuthenticationError::MissingStateParameter,
-            ));
-            return;
-        }
-
-        let auth_client = self.auth_client.clone();
-
-        if self.auth_state.is_user_anonymous().unwrap_or_default() {
-            let incoming_user_matches_current_user = match user_uid {
-                None => false,
-                Some(incoming_user_uid) => self
-                    .auth_state
-                    .user_id()
-                    .map(|current_user_uid| current_user_uid == incoming_user_uid)
-                    .unwrap_or_default(),
-            };
-            if !incoming_user_matches_current_user && !deleted_anonymous_user.unwrap_or_default() {
-                ctx.emit(AuthManagerEvent::LoginOverrideDetected(auth_payload));
-                return;
-            }
-            send_telemetry_from_ctx!(TelemetryEvent::AnonymousUserLinkedFromBrowser, ctx);
-        }
-
-        let _ = ctx.spawn(
-            async move {
-                auth_client
-                    .fetch_user(
-                        LoginToken::Firebase(FirebaseToken::Refresh(refresh_token)),
-                        false, /* for_refresh */
-                    )
-                    .await
-            },
-            Self::on_user_fetched,
-        );
+        self.pending_auth_state = None;
+        log::info!("Ignoring Warp account auth redirect in local-only build");
     }
 
     pub fn resume_interrupted_auth_payload(
         &mut self,
-        auth_payload: AuthRedirectPayload,
-        ctx: &mut ModelContext<Self>,
+        _auth_payload: AuthRedirectPayload,
+        _ctx: &mut ModelContext<Self>,
     ) {
-        let AuthRedirectPayload {
-            refresh_token,
-            user_uid: _,
-            deleted_anonymous_user: _,
-            state: _,
-        } = auth_payload;
-
-        let auth_client = self.auth_client.clone();
-
-        let _ = ctx.spawn(
-            async move {
-                auth_client
-                    .fetch_user(
-                        LoginToken::Firebase(FirebaseToken::Refresh(refresh_token)),
-                        false, /* for_refresh */
-                    )
-                    .await
-            },
-            Self::on_user_fetched,
-        );
+        self.pending_auth_state = None;
+        log::info!("Ignoring interrupted Warp account auth redirect in local-only build");
     }
 
     #[cfg(target_family = "wasm")]
-    pub fn initialize_user_from_session_cookie(&self, ctx: &mut ModelContext<Self>) {
-        let auth_client = self.auth_client.clone();
-        let _ = ctx.spawn(
-            async move {
-                auth_client
-                    .fetch_user(LoginToken::SessionCookie, false)
-                    .await
-            },
-            Self::on_user_fetched,
-        );
+    pub fn initialize_user_from_session_cookie(&self, _ctx: &mut ModelContext<Self>) {
+        log::info!("Ignoring Warp account session-cookie import in local-only build");
     }
 
     /// Local-only builds never refresh Warp account state from the server.
@@ -568,15 +483,13 @@ impl AuthManager {
         log::info!("Ignoring anonymous-user linking in local-only build");
     }
 
-    // Opens a page in the web app and logs the user in using a customToken if they are an anonymous user.
-    // Accepts a callback that constructs the URL using the customToken to open a page and log in an anonymous user.
+    // Remote Warp account-management pages are disabled in the local-only build.
     pub fn open_url_maybe_with_anonymous_token(
         &self,
-        ctx: &mut ModelContext<Self>,
-        construct_url: URLConstructorCallback,
+        _ctx: &mut ModelContext<Self>,
+        _construct_url: URLConstructorCallback,
     ) {
-        let url = construct_url(None);
-        ctx.open_url(&url);
+        log::info!("Ignoring Warp account-management URL open in local-only build");
     }
 
     pub fn copy_anonymous_user_linking_url_to_clipboard(&self, _ctx: &mut ModelContext<Self>) {
