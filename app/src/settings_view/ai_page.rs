@@ -27,11 +27,11 @@ use crate::settings::{
     AIAutoDetectionEnabled, AICommandDenylist, AISettingsChangedEvent,
     AgentModeCodingPermissionsType, AgentModeCommandExecutionDenylist,
     AgentModeCommandExecutionPredicate, AgentModeQuerySuggestionsEnabled, AwsBedrockAutoLogin,
-    AwsBedrockCredentialsEnabled, CodeSettings,
-    CodebaseContextEnabled, FeedbackBundledSkillEnabled, FileBasedMcpEnabled,
-    GitOperationsAutogenEnabled, IncludeAgentCommandsInHistory, IntelligentAutosuggestionsEnabled,
-    MemoryEnabled, NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled,
-    RuleSuggestionsEnabled, SharedBlockTitleGenerationEnabled, ShouldRenderCLIAgentToolbar,
+    AwsBedrockCredentialsEnabled, CodeSettings, CodebaseContextEnabled,
+    FeedbackBundledSkillEnabled, FileBasedMcpEnabled, GitOperationsAutogenEnabled,
+    IncludeAgentCommandsInHistory, IntelligentAutosuggestionsEnabled, MemoryEnabled,
+    NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled, RuleSuggestionsEnabled,
+    SharedBlockTitleGenerationEnabled, ShouldRenderCLIAgentToolbar,
     ShouldRenderUseAgentToolbarForUserCommands, ShouldShowOzUpdatesInZeroState, ShowAgentTips,
     ShowConversationHistory, ShowHintText, ThinkingDisplayMode, VoiceInputEnabled,
     WarpDriveContextEnabled,
@@ -7154,8 +7154,7 @@ impl SettingsWidget for ApiKeysWidget {
                         CONTENT_FONT_SIZE,
                     )
                     .with_color(
-                        styles::header_font_color(custom_inference_controls_enabled, app)
-                            .into(),
+                        styles::header_font_color(custom_inference_controls_enabled, app).into(),
                     )
                     .with_style(Properties::default().weight(Weight::Semibold))
                     .finish(),

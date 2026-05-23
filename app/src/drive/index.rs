@@ -2244,7 +2244,10 @@ impl DriveIndex {
         let mut rendered_space = vec![];
 
         // Local-only builds do not render team creation or join sections.
-        if matches!(section, DriveIndexSection::CreateATeam | DriveIndexSection::JoinTeam) {
+        if matches!(
+            section,
+            DriveIndexSection::CreateATeam | DriveIndexSection::JoinTeam
+        ) {
             return None;
         }
 

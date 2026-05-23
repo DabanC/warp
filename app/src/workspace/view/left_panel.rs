@@ -344,12 +344,17 @@ impl LeftPanelView {
         ctx: &mut ViewContext<Self>,
     ) {
         // Check if the current active view is still available
-        let current_view = self.active_view.as_ref().map(active_view_state::ActiveViewState::get);
+        let current_view = self
+            .active_view
+            .as_ref()
+            .map(active_view_state::ActiveViewState::get);
         let is_current_view_available = current_view.is_some_and(|current_view| {
             views.iter().any(|v| {
                 // Use discriminant comparison for GlobalSearch since it has inner data
                 match (v, &current_view) {
-                    (ToolPanelView::GlobalSearch { .. }, ToolPanelView::GlobalSearch { .. }) => true,
+                    (ToolPanelView::GlobalSearch { .. }, ToolPanelView::GlobalSearch { .. }) => {
+                        true
+                    }
                     _ => std::mem::discriminant(v) == std::mem::discriminant(&current_view),
                 }
             })
@@ -843,7 +848,9 @@ impl LeftPanelView {
         let active_view = self.active_view();
         for button in &mut self.toolbelt_buttons {
             button.render_with_active_state = match &button.action {
-                LeftPanelAction::ProjectExplorer => active_view == Some(ToolPanelView::ProjectExplorer),
+                LeftPanelAction::ProjectExplorer => {
+                    active_view == Some(ToolPanelView::ProjectExplorer)
+                }
                 LeftPanelAction::GlobalSearch { .. } => {
                     matches!(active_view, Some(ToolPanelView::GlobalSearch { .. }))
                 }
@@ -1097,7 +1104,9 @@ impl View for LeftPanelView {
                     }
                 }
                 Some(ToolPanelView::WarpDrive) => ctx.focus(&self.warp_drive_view),
-                Some(ToolPanelView::ConversationListView) => ctx.focus(&self.conversation_list_view),
+                Some(ToolPanelView::ConversationListView) => {
+                    ctx.focus(&self.conversation_list_view)
+                }
                 None => {}
             }
         }

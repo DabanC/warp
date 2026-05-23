@@ -2430,7 +2430,12 @@ fn test_toggle_left_panel_after_stale_warp_drive_restore_selects_local_view() {
 
             workspace.handle_action(&WorkspaceAction::ToggleLeftPanel, ctx);
 
-            assert!(workspace.active_tab_pane_group().as_ref(ctx).left_panel_open);
+            assert!(
+                workspace
+                    .active_tab_pane_group()
+                    .as_ref(ctx)
+                    .left_panel_open
+            );
             assert_eq!(
                 workspace.left_panel_view.as_ref(ctx).active_view(),
                 Some(ToolPanelView::ProjectExplorer)

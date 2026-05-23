@@ -3895,10 +3895,11 @@ impl Workspace {
                 LeftPanelDisplayedTab::GlobalSearch => Some(ToolPanelView::GlobalSearch {
                     entry_focus: GlobalSearchEntryFocus::Results,
                 }),
-                LeftPanelDisplayedTab::WarpDrive => {
-                    WarpDriveSettings::is_warp_drive_enabled(ctx).then_some(ToolPanelView::WarpDrive)
+                LeftPanelDisplayedTab::WarpDrive => WarpDriveSettings::is_warp_drive_enabled(ctx)
+                    .then_some(ToolPanelView::WarpDrive),
+                LeftPanelDisplayedTab::ConversationListView => {
+                    Some(ToolPanelView::ConversationListView)
                 }
-                LeftPanelDisplayedTab::ConversationListView => Some(ToolPanelView::ConversationListView),
             };
             lp.restore_active_view_from_snapshot(active_view, ctx);
             lp.set_active_pane_group(pane_group.clone(), &self.working_directories_model, ctx);
@@ -14985,7 +14986,8 @@ impl Workspace {
                 source,
                 query,
             } => {
-                if *mode != PaletteMode::WarpDrive || WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                if *mode != PaletteMode::WarpDrive || WarpDriveSettings::is_warp_drive_enabled(ctx)
+                {
                     self.open_palette_action(*mode, *source, query.as_deref(), ctx);
                 }
             }
@@ -17994,11 +17996,7 @@ impl Workspace {
                 )
             } else {
                 let tooltip = if self.left_panel_views.len() <= 1 {
-                    match self
-                        .left_panel_views
-                        .first()
-                        .copied()
-                    {
+                    match self.left_panel_views.first().copied() {
                         Some(ToolPanelView::ProjectExplorer) => "Project explorer",
                         Some(ToolPanelView::GlobalSearch { .. }) => "Global search",
                         Some(ToolPanelView::WarpDrive) => "Warp Drive",
@@ -18048,11 +18046,7 @@ impl Workspace {
         let is_active = self.active_tab_pane_group().as_ref(ctx).left_panel_open;
 
         let tooltip_text = if self.left_panel_views.len() <= 1 {
-            match self
-                .left_panel_views
-                .first()
-                .copied()
-            {
+            match self.left_panel_views.first().copied() {
                 Some(ToolPanelView::ProjectExplorer) => "Project explorer",
                 Some(ToolPanelView::GlobalSearch { .. }) => "Global search",
                 Some(ToolPanelView::WarpDrive) => "Warp Drive",
@@ -21368,7 +21362,8 @@ impl TypedActionView for Workspace {
                 source,
                 query,
             } => {
-                if *mode != PaletteMode::WarpDrive || WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                if *mode != PaletteMode::WarpDrive || WarpDriveSettings::is_warp_drive_enabled(ctx)
+                {
                     self.open_palette_action(*mode, *source, query.as_deref(), ctx);
                 }
             }

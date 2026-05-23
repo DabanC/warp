@@ -1,7 +1,7 @@
+use super::DriveSortOrder;
 use settings::{
     macros::define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud,
 };
-use super::DriveSortOrder;
 
 pub const HAS_AUTO_OPENED_WELCOME_FOLDER: &str = "HasAutoOpenedWelcomeFolder";
 

@@ -43,8 +43,8 @@ fn test_user_global_skills_defaults_to_empty() {
 
 #[test]
 fn test_local_installation_user_is_not_remote_or_anonymous() {
-    let installation_id = uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555")
-        .expect("valid uuid");
+    let installation_id =
+        uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555").expect("valid uuid");
 
     let user = User::local_installation(installation_id);
 
