@@ -4,8 +4,8 @@ use crate::model::{
 };
 use crate::slides::{
     AgentSlide, AgentSlideEvent, CustomizeUISlide, FreeUserNoAiSlide, IntentionSlide, IntroSlide,
-    IntroSlideEvent, OnboardingModelInfo, OnboardingSlide, ProjectSlide, ThemePickerSlide,
-    ThemePickerSlideEvent, ThirdPartySlide,
+    OnboardingModelInfo, OnboardingSlide, ProjectSlide, ThemePickerSlide, ThemePickerSlideEvent,
+    ThirdPartySlide,
 };
 use crate::telemetry::OnboardingEvent;
 use ai::LLMId;
@@ -48,7 +48,6 @@ pub enum AgentOnboardingEvent {
     },
     OnboardingCompleted(SelectedSettings),
     OnboardingSkipped,
-    LoginFromWelcomeRequested,
     /// Emitted when the user clicks the "Privacy Settings" link on the terminal
     /// intention theme slide. The variant name encodes that the event is only
     /// emitted from the terminal-intention theme slide; consumers (e.g. a
@@ -155,12 +154,6 @@ impl AgentOnboardingView {
             let onboarding_state = onboarding_state.clone();
             ctx.add_typed_action_view(move |_| IntroSlide::new(onboarding_state))
         };
-
-        ctx.subscribe_to_view(&intro_slide, |_me, _view, event, ctx| match event {
-            IntroSlideEvent::LoginRequested => {
-                ctx.emit(AgentOnboardingEvent::LoginFromWelcomeRequested);
-            }
-        });
 
         let theme_picker_slide = {
             let themes = theme_picker_themes.clone();

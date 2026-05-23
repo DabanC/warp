@@ -238,7 +238,7 @@ impl AccountWidget {
         if let Some(user_id) = auth_state.user_id() {
             plan_info.add_child(
                 Text::new_inline(
-                    user_id.as_str(),
+                    user_id.to_string(),
                     appearance.ui_font_family(),
                     REGULAR_TEXT_FONT_SIZE,
                 )
@@ -354,7 +354,7 @@ impl AccountWidget {
         if let Some(user_id) = auth_state.user_id() {
             plan_info.add_child(
                 Text::new_inline(
-                    user_id.as_str(),
+                    user_id.to_string(),
                     appearance.ui_font_family(),
                     REGULAR_TEXT_FONT_SIZE,
                 )
@@ -394,7 +394,7 @@ impl SettingsWidget for AccountWidget {
         &self,
         view: &Self::View,
         appearance: &Appearance,
-        app: &AppContext,
+        _app: &AppContext,
     ) -> Box<dyn Element> {
         let account_info = if view.auth_state.is_anonymous_or_logged_out() {
             self.render_anonymous_account_info(view.auth_state.as_ref(), appearance)

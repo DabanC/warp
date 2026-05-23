@@ -19,7 +19,6 @@ pub mod web_handoff;
 
 pub use auth_manager::AuthManager;
 pub use auth_state::AuthStateProvider;
-pub use login_failure_notification::LoginFailureReason;
 pub use user_uid::UserUid;
 
 use warpui::AppContext;

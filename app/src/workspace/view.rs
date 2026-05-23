@@ -426,7 +426,7 @@ use warpui::elements::{
     CacheOption, DispatchEventResult, DraggableState, DropTarget, EventHandler, Image,
     MouseInBehavior, Rect,
 };
-use warpui::ui_components::button::{Button, ButtonVariant};
+use warpui::ui_components::button::Button;
 use warpui::windowing::{state::ApplicationStage, StateEvent, WindowManager};
 use warpui::{elements::MouseStateHandle, fonts::Properties};
 

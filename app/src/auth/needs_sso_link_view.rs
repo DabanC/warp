@@ -1,5 +1,7 @@
 use crate::auth::login_error_modal::LoginErrorModal;
-use warpui::{AppContext, Element, Entity, TypedActionView, View};
+use warpui::{
+    ui_components::components::UiComponent, AppContext, Element, Entity, TypedActionView, View,
+};
 
 pub struct NeedsSsoLinkView;
 

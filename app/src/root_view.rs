@@ -8,7 +8,7 @@ use crate::auth::auth_view_modal::AuthRedirectPayload;
 use crate::auth::login_slide::{LoginSlideEvent, LoginSlideView};
 use crate::auth::needs_sso_link_view::NeedsSsoLinkView;
 use crate::auth::paste_auth_token_modal::PasteAuthTokenModalView;
-use crate::auth::{AuthStateProvider, LoginFailureReason};
+use crate::auth::AuthStateProvider;
 use crate::autoupdate::{AutoupdateState, AutoupdateStateEvent};
 use crate::cloud_object::model::persistence::CloudModel;
 use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, ObjectType};
@@ -1653,6 +1653,7 @@ impl RootView {
     ) -> Self {
         let server_api_provider = ServerApiProvider::as_ref(ctx);
         let server_api = server_api_provider.get();
+        #[cfg(target_family = "wasm")]
         let auth_state = AuthStateProvider::as_ref(ctx).get().clone();
 
         ctx.subscribe_to_model(&AuthManager::handle(ctx), |me, _, event, ctx| {
@@ -2221,22 +2222,6 @@ impl RootView {
             }
             AgentOnboardingEvent::PrivacySettingsFromTerminalThemeSlideRequested => {
                 log::info!("Privacy-settings login slide is disabled in local-only build");
-            }
-            AgentOnboardingEvent::LoginFromWelcomeRequested => {
-                let AuthOnboardingState::Onboarding { target, .. } = &self.auth_onboarding_state
-                else {
-                    return;
-                };
-                mark_local_onboarding_completed(ctx);
-                if FeatureFlag::HOAOnboardingFlow.is_enabled() {
-                    mark_hoa_onboarding_completed(ctx);
-                }
-                let workspace = target.clone().to_workspace(ctx);
-                self.auth_onboarding_state = AuthOnboardingState::Terminal(workspace);
-                ctx.emit(RootViewEvent::AuthOnboardingStateChanged);
-                self.start_autoupdate_polling(ctx);
-                self.focus(ctx);
-                ctx.notify();
             }
             AgentOnboardingEvent::AppBecameActive => {
                 log::info!("Ignoring remote onboarding active refresh in local-only build");
