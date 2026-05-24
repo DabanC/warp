@@ -1,7 +1,7 @@
 From c5091277dd2d6fec68a5b7771a59c6362db462e8 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Fri, 22 May 2026 01:05:23 +0800
-Subject: [PATCH 08/26] local-only: start auth removal plan
+Subject: [PATCH 08/27] local-only: start auth removal plan
 
 ---
  .../2026-05-21-local-only-auth-account-removal.md   | 13 +++++++++++++

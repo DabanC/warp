@@ -24,3 +24,4 @@
 0024-local-only-hide-stale-Warp-Drive-and-Runs-panels.patch
 0025-local-only-fix-stale-left-panel-review-issues.patch
 0026-local-only-apply-Rust-formatting-cleanup.patch
+0027-local-only-avoid-keychain-reads-during-launch.patch

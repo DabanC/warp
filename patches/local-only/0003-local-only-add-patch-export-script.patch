@@ -1,7 +1,7 @@
 From c2ab997bdf86e509242613b9ae0f8301c5a9dd4f Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Thu, 21 May 2026 22:10:24 +0800
-Subject: [PATCH 03/26] local-only: add patch export script
+Subject: [PATCH 03/27] local-only: add patch export script
 
 ---
  script/local-only/export-patches | 59 ++++++++++++++++++++++++++++++++

@@ -1,0 +1,98 @@
+From dbb7e7d852d28b44d610cc0ea9a84e1732b286d2 Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Sun, 24 May 2026 15:39:11 +0800
+Subject: [PATCH 27/27] local-only: avoid keychain reads during launch
+
+---
+ crates/ai/src/api_keys.rs       | 19 +++++++++++++++----
+ crates/ai/src/api_keys_tests.rs | 29 +++++++++++++++++++++++++++++
+ 2 files changed, 44 insertions(+), 4 deletions(-)
+
+diff --git a/crates/ai/src/api_keys.rs b/crates/ai/src/api_keys.rs
+index 47b8d29e..77cd9dc6 100644
+--- a/crates/ai/src/api_keys.rs
++++ b/crates/ai/src/api_keys.rs
+@@ -102,13 +102,14 @@ pub struct ApiKeyManager {
+ 
+ impl ApiKeyManager {
+     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
+-        let keys = Self::load_keys_from_secure_storage(ctx);
+-        Self {
+-            keys,
++        let mut manager = Self {
++            keys: ApiKeys::default(),
+             aws_credentials_state: AwsCredentialsState::Missing,
+             aws_credentials_refresh_strategy: AwsCredentialsRefreshStrategy::default(),
+             secure_storage_write_version: 0,
+-        }
++        };
++        manager.load_keys_from_secure_storage_deferred(ctx);
++        manager
+     }
+ 
+     pub fn keys(&self) -> &ApiKeys {
+@@ -345,6 +346,16 @@ impl ApiKeyManager {
+         }
+     }
+ 
++    fn load_keys_from_secure_storage_deferred(&mut self, ctx: &mut ModelContext<Self>) {
++        let _ = ctx.spawn(async {}, |me, _, ctx| {
++            let keys = Self::load_keys_from_secure_storage(ctx);
++            if keys != me.keys {
++                me.keys = keys;
++                ctx.emit(ApiKeyManagerEvent::KeysUpdated);
++            }
++        });
++    }
++
+     fn load_keys_from_secure_storage(ctx: &mut ModelContext<Self>) -> ApiKeys {
+         let key_json = match ctx.secure_storage().read_value(SECURE_STORAGE_KEY) {
+             Ok(json) => json,
+diff --git a/crates/ai/src/api_keys_tests.rs b/crates/ai/src/api_keys_tests.rs
+index 91605a76..da429817 100644
+--- a/crates/ai/src/api_keys_tests.rs
++++ b/crates/ai/src/api_keys_tests.rs
+@@ -1,4 +1,6 @@
+ use super::*;
++use warpui::App;
++use warpui_extras::secure_storage::{self, Error, SecureStorage};
+ 
+ fn make_manager(keys: ApiKeys) -> ApiKeyManager {
+     ApiKeyManager {
+@@ -51,6 +53,33 @@ fn endpoint_with_keys(
+     }
+ }
+ 
++// ── startup loading ────────────────────────────────────────────
++
++struct PanicOnReadStorage;
++
++impl SecureStorage for PanicOnReadStorage {
++    fn write_value(&self, _key: &str, _value: &str) -> Result<(), Error> {
++        Ok(())
++    }
++
++    fn read_value(&self, key: &str) -> Result<String, Error> {
++        panic!("secure storage read must not block startup for key {key}");
++    }
++
++    fn remove_value(&self, _key: &str) -> Result<(), Error> {
++        Ok(())
++    }
++}
++
++#[test]
++fn new_does_not_read_secure_storage_synchronously() {
++    App::test((), |app| async move {
++        app.add_singleton_model(|_| -> secure_storage::Model { Box::new(PanicOnReadStorage) });
++
++        app.add_singleton_model(ApiKeyManager::new);
++    });
++}
++
+ // ── serde round-trip ────────────────────────────────────────────
+ 
+ #[test]
+-- 
+2.53.0
+
