@@ -102,13 +102,14 @@ pub struct ApiKeyManager {
 
 impl ApiKeyManager {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
-        let keys = Self::load_keys_from_secure_storage(ctx);
-        Self {
-            keys,
+        let mut manager = Self {
+            keys: ApiKeys::default(),
             aws_credentials_state: AwsCredentialsState::Missing,
             aws_credentials_refresh_strategy: AwsCredentialsRefreshStrategy::default(),
             secure_storage_write_version: 0,
-        }
+        };
+        manager.load_keys_from_secure_storage_deferred(ctx);
+        manager
     }
 
     pub fn keys(&self) -> &ApiKeys {
@@ -343,6 +344,16 @@ impl ApiKeyManager {
                 aws_credentials,
             })
         }
+    }
+
+    fn load_keys_from_secure_storage_deferred(&mut self, ctx: &mut ModelContext<Self>) {
+        let _ = ctx.spawn(async {}, |me, _, ctx| {
+            let keys = Self::load_keys_from_secure_storage(ctx);
+            if keys != me.keys {
+                me.keys = keys;
+                ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+            }
+        });
     }
 
     fn load_keys_from_secure_storage(ctx: &mut ModelContext<Self>) -> ApiKeys {

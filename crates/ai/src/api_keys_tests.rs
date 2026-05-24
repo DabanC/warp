@@ -1,4 +1,6 @@
 use super::*;
+use warpui::App;
+use warpui_extras::secure_storage::{self, Error, SecureStorage};
 
 fn make_manager(keys: ApiKeys) -> ApiKeyManager {
     ApiKeyManager {
@@ -49,6 +51,33 @@ fn endpoint_with_keys(
             })
             .collect(),
     }
+}
+
+// ── startup loading ────────────────────────────────────────────
+
+struct PanicOnReadStorage;
+
+impl SecureStorage for PanicOnReadStorage {
+    fn write_value(&self, _key: &str, _value: &str) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn read_value(&self, key: &str) -> Result<String, Error> {
+        panic!("secure storage read must not block startup for key {key}");
+    }
+
+    fn remove_value(&self, _key: &str) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+#[test]
+fn new_does_not_read_secure_storage_synchronously() {
+    App::test((), |app| async move {
+        app.add_singleton_model(|_| -> secure_storage::Model { Box::new(PanicOnReadStorage) });
+
+        app.add_singleton_model(ApiKeyManager::new);
+    });
 }
 
 // ── serde round-trip ────────────────────────────────────────────
