@@ -23,16 +23,12 @@ use crate::{
     ai::blocklist::block::{DetectedLinksState, SecretRedactionState},
     ui_components::{blended_colors, icons::Icon},
 };
-use pathfinder_color::ColorU;
 
-use super::common::{render_query_text, render_user_avatar, FindContext};
+use super::common::{render_query_text, FindContext};
 
 /// Data required to render the AI block query component.
 #[derive(Copy, Clone, Debug)]
 pub(super) struct Props<'a> {
-    pub(super) user_display_name: &'a String,
-    pub(super) profile_image_path: Option<&'a String>,
-    pub(super) avatar_color: Option<ColorU>,
     pub(super) query_and_index: Option<(&'a str, usize)>,
     pub(super) query_prefix_highlight_len: Option<usize>,
     pub(super) detected_links_state: &'a DetectedLinksState,
@@ -47,9 +43,6 @@ pub(super) fn maybe_render(props: Props, app: &AppContext) -> Option<Box<dyn Ele
     props.query_and_index.map(|(query, input_index)| {
         render_query(
             query,
-            props.user_display_name,
-            props.profile_image_path,
-            props.avatar_color,
             props.detected_links_state,
             props.secret_redaction_state,
             input_index,
@@ -66,9 +59,6 @@ pub(super) fn maybe_render(props: Props, app: &AppContext) -> Option<Box<dyn Ele
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_query(
     query: &str,
-    user_display_name: &str,
-    profile_image_path: Option<&String>,
-    avatar_color: Option<ColorU>,
     detected_links_state: &DetectedLinksState,
     secret_redaction_state: &SecretRedactionState,
     input_index: usize,
@@ -79,15 +69,6 @@ pub(crate) fn render_query(
     find_context: Option<FindContext>,
     app: &AppContext,
 ) -> Box<dyn Element> {
-    let avatar = Container::new(render_user_avatar(
-        user_display_name,
-        profile_image_path,
-        avatar_color,
-        app,
-    ))
-    .with_margin_right(16.)
-    .finish();
-
     let properties = Properties {
         style: Style::Normal,
         weight: Weight::Bold,
@@ -115,11 +96,7 @@ pub(crate) fn render_query(
         query = query.with_child(render_attachments(attachments, appearance));
     }
 
-    Flex::row()
-        .with_cross_axis_alignment(warpui::elements::CrossAxisAlignment::Start)
-        .with_child(avatar)
-        .with_child(Shrinkable::new(1., query.finish()).finish())
-        .finish()
+    Shrinkable::new(1., query.finish()).finish()
 }
 
 fn render_attachments(

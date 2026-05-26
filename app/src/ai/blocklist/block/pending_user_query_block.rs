@@ -14,9 +14,7 @@ use warpui::{
 };
 
 use crate::{
-    ai::blocklist::block::view_impl::{
-        common::render_user_avatar, CONTENT_HORIZONTAL_PADDING, CONTENT_ITEM_VERTICAL_MARGIN,
-    },
+    ai::blocklist::block::view_impl::{CONTENT_HORIZONTAL_PADDING, CONTENT_ITEM_VERTICAL_MARGIN},
     appearance::Appearance,
     terminal::{block_list_element::BlockListMenuSource, view::TerminalAction},
     ui_components::{blended_colors, icons::Icon},
@@ -29,8 +27,6 @@ use crate::{
 /// Cloud Mode run waiting for its real shared-session transcript query to arrive.
 pub struct PendingUserQueryBlock {
     prompt: String,
-    user_display_name: String,
-    profile_image_path: Option<String>,
     view_id: EntityId,
     selection_handle: SelectionHandle,
     /// In an `RwLock` so the `SelectableArea` can update it synchronously when a selection ends,
@@ -43,8 +39,6 @@ pub struct PendingUserQueryBlock {
 impl PendingUserQueryBlock {
     pub fn new(
         prompt: String,
-        user_display_name: String,
-        profile_image_path: Option<String>,
         show_close_button: bool,
         show_send_now_button: bool,
         ctx: &mut ViewContext<Self>,
@@ -71,8 +65,6 @@ impl PendingUserQueryBlock {
         });
         Self {
             prompt,
-            user_display_name,
-            profile_image_path,
             view_id: ctx.view_id(),
             selection_handle: Default::default(),
             selected_text: Default::default(),
@@ -142,15 +134,6 @@ impl View for PendingUserQueryBlock {
         let appearance = Appearance::as_ref(app);
         let theme = appearance.theme();
         let dimmed_color = blended_colors::text_sub(theme, theme.surface_1());
-
-        let avatar = Container::new(render_user_avatar(
-            &self.user_display_name,
-            self.profile_image_path.as_ref(),
-            None,
-            app,
-        ))
-        .with_margin_right(16.)
-        .finish();
 
         let properties = Properties {
             style: Style::Normal,
@@ -227,7 +210,6 @@ impl View for PendingUserQueryBlock {
 
         let mut row = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
-            .with_child(avatar)
             .with_child(Expanded::new(1., text_column.finish()).finish());
         if self.close_button.is_some() || self.send_now_button.is_some() {
             let buttons = Container::new(buttons_column.finish())

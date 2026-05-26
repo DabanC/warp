@@ -58,7 +58,6 @@ use crate::settings::{AISettings, InputModeSettings, InputSettings};
 use crate::terminal::model::blocks::{BlockHeightItem, RemovableBlocklistItem, RichContentItem};
 use crate::terminal::model::rich_content::RichContentType;
 use crate::terminal::view::ambient_agent::is_cloud_agent_pre_first_exchange;
-use crate::terminal::TerminalView;
 use crate::util::truncation::truncate_from_end;
 
 use super::secret_redaction::SecretRedactionState;
@@ -956,44 +955,8 @@ impl View for AIBlock {
                 contents.add_child(header.with_content_item_spacing().finish());
                 did_render_header = true;
             }
-            // Derive the display info for the participant who initiated this exchange.
-            // For non-shared sessions, this is just the current user.
-            // For shared sessions, this is the user who initiated the request.
-            let (avatar_display_name, profile_image_path, avatar_color) = self
-                .model
-                .response_initiator(app)
-                .and_then(|participant_id| {
-                    app.view_with_id::<TerminalView>(self.window_id, self.terminal_view_id)
-                        .and_then(|terminal_view| {
-                            terminal_view.read(app, |view, app| {
-                                view.shared_session_presence_manager().and_then(move |pm| {
-                                    pm.as_ref(app).get_participant(&participant_id).map(
-                                        |participant| {
-                                            // Get the display info from the participant
-                                            // who sent this query.
-                                            (
-                                                participant.info.profile_data.display_name.clone(),
-                                                participant.info.profile_data.photo_url.clone(),
-                                                Some(participant.color),
-                                            )
-                                        },
-                                    )
-                                })
-                            })
-                        })
-                })
-                // Fallback to the current user's info if this is not a shared session
-                // or the participant is not found.
-                .unwrap_or((
-                    self.user_display_name.clone(),
-                    self.profile_image_path.clone(),
-                    None,
-                ));
             if let Some(rendered_query) = query::maybe_render(
                 query::Props {
-                    user_display_name: &avatar_display_name,
-                    profile_image_path: profile_image_path.as_ref(),
-                    avatar_color,
                     query_and_index: Some((&query_for_display, input_index)),
                     query_prefix_highlight_len,
                     detected_links_state: &self.detected_links_state,

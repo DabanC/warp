@@ -182,7 +182,6 @@ use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::get_relevant_files::controller::{
     GetRelevantFilesController, GetRelevantFilesControllerEvent,
 };
-use crate::auth::AuthStateProvider;
 use crate::code::editor::view::{CodeEditorEvent, CodeEditorView};
 use crate::notebooks::editor::model::FileLinkResolutionContext;
 use crate::notebooks::editor::view::{EditorViewEvent, RichTextEditorView};
@@ -246,7 +245,6 @@ use super::{
 };
 
 /// The default display name used for the user if they have no associated display name.
-const DEFAULT_USER_DISPLAY_NAME: &str = "User";
 
 const HAS_PENDING_ACTION: &str = "HasPendingAction";
 const DISPATCHED_REQUESTED_EDIT_KEYMAP_CONTEXT: &str = "PendingAIRequestedEdits";
@@ -831,9 +829,6 @@ pub struct AIBlock {
     model: Rc<dyn AIBlockModel<View = AIBlock>>,
     terminal_model: Arc<FairMutex<TerminalModel>>,
     client_ids: ClientIdentifiers,
-    profile_image_path: Option<String>,
-    user_display_name: String,
-
     /// Only applies to text selections made at the `AIBlock` level. Child views of the `AIBlock`
     /// are responsible for managing their own text selection states. We need this in an RwLock so
     /// that the SelectableArea can modify this synchronously when a selection ends. This is necessary
@@ -1033,10 +1028,6 @@ impl AIBlock {
         terminal_view_id: EntityId,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
-        let auth_state = AuthStateProvider::as_ref(ctx).get().clone();
-        let user_display_name = auth_state
-            .username_for_display()
-            .unwrap_or_else(|| DEFAULT_USER_DISPLAY_NAME.to_owned());
         let num_attached_context_blocks = num_attached_context_blocks(model.inputs_to_render(ctx));
         let has_attached_context_selected_text =
             has_attached_context_selected_text(model.inputs_to_render(ctx));
@@ -1380,8 +1371,6 @@ impl AIBlock {
             model,
             terminal_model,
             client_ids,
-            profile_image_path: auth_state.user_photo_url(),
-            user_display_name,
             controller,
             action_model,
             context_model,

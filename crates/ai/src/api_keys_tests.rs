@@ -80,6 +80,18 @@ fn new_does_not_read_secure_storage_synchronously() {
     });
 }
 
+#[test]
+fn new_does_not_read_secure_storage_during_launch() {
+    App::test((), |app| async move {
+        app.add_singleton_model(|_| -> secure_storage::Model { Box::new(PanicOnReadStorage) });
+
+        let manager = app.add_singleton_model(ApiKeyManager::new);
+        manager.read(&app, |manager, _| {
+            assert_eq!(manager.keys(), &ApiKeys::default());
+        });
+    });
+}
+
 // ── serde round-trip ────────────────────────────────────────────
 
 #[test]

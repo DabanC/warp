@@ -1,24 +1,28 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{ai::agent::redaction, terminal::model::session::SessionType};
-use futures_util::StreamExt;
+use anyhow::anyhow;
+use serde::{Deserialize, Serialize};
+use url::Url;
+use uuid::Uuid;
 use warp_core::features::FeatureFlag;
 use warp_multi_agent_api as api;
 
-use crate::server::server_api::ServerApi;
+use crate::server::server_api::{AIApiError, ServerApi};
 
 use super::{convert_to::convert_input, ConvertToAPITypeError, RequestParams, ResponseStream};
 
 pub async fn generate_multi_agent_output(
     server_api: Arc<ServerApi>,
     mut params: RequestParams,
-    cancellation_rx: futures::channel::oneshot::Receiver<()>,
+    _cancellation_rx: futures::channel::oneshot::Receiver<()>,
 ) -> Result<ResponseStream, ConvertToAPITypeError> {
     let supported_tools = params
         .supported_tools_override
         .take()
         .unwrap_or_else(|| get_supported_tools(&params));
     let supported_cli_agent_tools = get_supported_cli_agent_tools(&params);
+    let custom_provider_model = resolve_custom_provider_model(&params);
     let mut logging_metadata = HashMap::new();
     if let Some(metadata) = params.metadata {
         logging_metadata.insert(
@@ -137,17 +141,304 @@ pub async fn generate_multi_agent_output(
         mcp_context: params.mcp_context.map(Into::into),
     };
 
-    let response_stream = server_api.generate_multi_agent_output(&request).await;
-    match response_stream {
-        Ok(stream) => {
-            let output_stream = stream.take_until(cancellation_rx);
-            Ok(Box::pin(output_stream))
+    if let Some(custom_provider_model) = custom_provider_model {
+        return generate_custom_provider_output(server_api, &request, custom_provider_model).await;
+    }
+
+    generate_local_agent_message_output(&request, local_only_custom_model_required_message()).await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CustomProviderModel {
+    base_url: String,
+    api_key: String,
+    model_slug: String,
+}
+
+fn resolve_custom_provider_model(params: &RequestParams) -> Option<CustomProviderModel> {
+    let selected_model = params.model.as_str();
+    let providers = params.custom_model_providers.as_ref()?;
+
+    providers.providers.iter().find_map(|provider| {
+        provider
+            .models
+            .iter()
+            .find(|model| model.config_key == selected_model)
+            .map(|model| CustomProviderModel {
+                base_url: provider.base_url.clone(),
+                api_key: provider.api_key.clone(),
+                model_slug: model.slug.clone(),
+            })
+    })
+}
+
+async fn generate_custom_provider_output(
+    server_api: Arc<ServerApi>,
+    request: &api::Request,
+    model: CustomProviderModel,
+) -> Result<ResponseStream, ConvertToAPITypeError> {
+    let (tx, rx) = async_channel::unbounded();
+    let result = request_custom_provider_completion(server_api, request, &model).await;
+
+    match result {
+        Ok(text) => {
+            send_local_agent_message_events(&tx, request, text).await;
         }
         Err(e) => {
-            let (tx, rx) = async_channel::unbounded();
-            let _ = tx.send(Err(e)).await;
-            Ok(Box::pin(rx))
+            let _ = tx.send(Err(Arc::new(e))).await;
         }
+    }
+
+    Ok(Box::pin(rx))
+}
+
+async fn generate_local_agent_message_output(
+    request: &api::Request,
+    text: String,
+) -> Result<ResponseStream, ConvertToAPITypeError> {
+    let (tx, rx) = async_channel::unbounded();
+    send_local_agent_message_events(&tx, request, text).await;
+    Ok(Box::pin(rx))
+}
+
+async fn send_local_agent_message_events(
+    tx: &async_channel::Sender<Result<api::ResponseEvent, Arc<AIApiError>>>,
+    request: &api::Request,
+    text: String,
+) {
+    for event in custom_provider_response_events(request, text) {
+        let _ = tx.send(Ok(event)).await;
+    }
+}
+
+fn local_only_custom_model_required_message() -> String {
+    "Local-only AI is configured to use custom providers only. Select a custom AI model in Warp Agent settings before running /agent.".to_string()
+}
+
+async fn request_custom_provider_completion(
+    server_api: Arc<ServerApi>,
+    request: &api::Request,
+    model: &CustomProviderModel,
+) -> Result<String, AIApiError> {
+    let payload = OpenAIChatCompletionRequest {
+        model: model.model_slug.clone(),
+        messages: openai_messages_from_request(request),
+    };
+    let url = chat_completions_url(&model.base_url)?;
+
+    let response = server_api
+        .http_client()
+        .post(url.as_str())
+        .bearer_auth(&model.api_key)
+        .json(&payload)
+        .send()
+        .await?
+        .error_for_status_with_body()
+        .await?
+        .json::<OpenAIChatCompletionResponse>()
+        .await?;
+
+    Ok(response
+        .choices
+        .into_iter()
+        .find_map(|choice| choice.message.content)
+        .unwrap_or_default())
+}
+
+fn custom_provider_response_events(request: &api::Request, text: String) -> Vec<api::ResponseEvent> {
+    let request_id = Uuid::new_v4().to_string();
+    let conversation_id = request
+        .metadata
+        .as_ref()
+        .map(|metadata| metadata.conversation_id.clone())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let task_id = request
+        .task_context
+        .as_ref()
+        .and_then(|context| context.tasks.first())
+        .map(|task| task.id.clone())
+        .unwrap_or_default();
+
+    vec![
+        api::ResponseEvent {
+            r#type: Some(api::response_event::Type::Init(
+                api::response_event::StreamInit {
+                    request_id: request_id.clone(),
+                    conversation_id,
+                    run_id: String::new(),
+                },
+            )),
+        },
+        api::ResponseEvent {
+            r#type: Some(api::response_event::Type::ClientActions(
+                api::response_event::ClientActions {
+                    actions: vec![api::ClientAction {
+                        action: Some(api::client_action::Action::AddMessagesToTask(
+                            api::client_action::AddMessagesToTask {
+                                task_id: task_id.clone(),
+                                messages: vec![api::Message {
+                                    id: Uuid::new_v4().to_string(),
+                                    task_id,
+                                    server_message_data: String::new(),
+                                    citations: vec![],
+                                    message: Some(api::message::Message::AgentOutput(
+                                        api::message::AgentOutput { text },
+                                    )),
+                                    request_id,
+                                    timestamp: None,
+                                }],
+                            },
+                        )),
+                    }],
+                },
+            )),
+        },
+        api::ResponseEvent {
+            r#type: Some(api::response_event::Type::Finished(
+                api::response_event::StreamFinished {
+                    reason: Some(api::response_event::stream_finished::Reason::Done(
+                        api::response_event::stream_finished::Done {},
+                    )),
+                    conversation_usage_metadata: None,
+                    token_usage: vec![],
+                    should_refresh_model_config: false,
+                    request_cost: None,
+                },
+            )),
+        },
+    ]
+}
+
+fn chat_completions_url(base_url: &str) -> Result<Url, AIApiError> {
+    let base_url = if base_url.ends_with('/') {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/")
+    };
+    let base_url = Url::parse(&base_url).map_err(|e| {
+        AIApiError::Other(anyhow!("Invalid custom AI provider base URL {base_url:?}: {e:#}"))
+    })?;
+
+    Ok(if base_url.path().ends_with("/chat/completions") {
+        base_url
+    } else if base_url.path().ends_with("/v1/") || base_url.path().ends_with("/v1") {
+        base_url.join("chat/completions").map_err(|e| {
+            AIApiError::Other(anyhow!(
+                "Invalid custom AI provider chat completions URL for {base_url}: {e:#}"
+            ))
+        })?
+    } else {
+        base_url.join("v1/chat/completions").map_err(|e| {
+            AIApiError::Other(anyhow!(
+                "Invalid custom AI provider chat completions URL for {base_url}: {e:#}"
+            ))
+        })?
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIChatCompletionRequest {
+    model: String,
+    messages: Vec<OpenAIChatMessage>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIChatMessage {
+    role: &'static str,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIChatCompletionResponse {
+    choices: Vec<OpenAIChatChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIChatChoice {
+    message: OpenAIChatResponseMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIChatResponseMessage {
+    content: Option<String>,
+}
+
+fn openai_messages_from_request(request: &api::Request) -> Vec<OpenAIChatMessage> {
+    let mut messages = Vec::new();
+
+    if let Some(input) = &request.input {
+        append_input_messages(input, &mut messages);
+    }
+
+    if messages.is_empty() {
+        messages.push(OpenAIChatMessage {
+            role: "user",
+            content: "Continue.".to_string(),
+        });
+    }
+
+    messages
+}
+
+fn append_input_messages(input: &api::request::Input, messages: &mut Vec<OpenAIChatMessage>) {
+    let Some(input_type) = input.r#type.as_ref() else {
+        return;
+    };
+
+    match input_type {
+        api::request::input::Type::UserInputs(user_inputs) => {
+            for input in &user_inputs.inputs {
+                append_user_input_message(input.input.as_ref(), messages);
+            }
+        }
+        api::request::input::Type::QueryWithCannedResponse(query) => {
+            push_user_message(messages, query.query.clone());
+        }
+        api::request::input::Type::AutoCodeDiffQuery(query) => {
+            push_user_message(messages, query.query.clone());
+        }
+        api::request::input::Type::CreateNewProject(query) => {
+            push_user_message(messages, query.query.clone());
+        }
+        api::request::input::Type::SummarizeConversation(summary) => {
+            push_user_message(messages, summary.prompt.clone());
+        }
+        api::request::input::Type::InvokeSkill(invoke) => {
+            if let Some(query) = &invoke.user_query {
+                push_user_message(messages, query.query.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn append_user_input_message(
+    input: Option<&api::request::input::user_inputs::user_input::Input>,
+    messages: &mut Vec<OpenAIChatMessage>,
+) {
+    match input {
+        Some(api::request::input::user_inputs::user_input::Input::UserQuery(query)) => {
+            push_user_message(messages, query.query.clone());
+        }
+        Some(api::request::input::user_inputs::user_input::Input::CliAgentUserQuery(query)) => {
+            if let Some(user_query) = &query.user_query {
+                push_user_message(messages, user_query.query.clone());
+            }
+        }
+        Some(api::request::input::user_inputs::user_input::Input::ToolCallResult(result)) => {
+            push_user_message(messages, format!("Tool result: {result:#?}"));
+        }
+        _ => {}
+    }
+}
+
+fn push_user_message(messages: &mut Vec<OpenAIChatMessage>, content: String) {
+    if !content.trim().is_empty() {
+        messages.push(OpenAIChatMessage {
+            role: "user",
+            content,
+        });
     }
 }
 

@@ -1,11 +1,12 @@
 pub use crate::aws_credentials::{AwsCredentials, AwsCredentialsState};
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::PathBuf;
 use uuid::Uuid;
 use warp_multi_agent_api as api;
 use warpui::{Entity, ModelContext, SingletonEntity};
-use warpui_extras::secure_storage::{self, AppContextExt};
 
-const SECURE_STORAGE_KEY: &str = "AiApiKeys";
+const API_KEYS_STORAGE_FILE_NAME: &str = "ai_api_keys.json";
 
 /// Emitted when user-provided API keys are updated in-memory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,27 +348,51 @@ impl ApiKeyManager {
     }
 
     fn load_keys_from_secure_storage_deferred(&mut self, ctx: &mut ModelContext<Self>) {
-        let _ = ctx.spawn(async {}, |me, _, ctx| {
-            let keys = Self::load_keys_from_secure_storage(ctx);
-            if keys != me.keys {
-                me.keys = keys;
-                ctx.emit(ApiKeyManagerEvent::KeysUpdated);
-            }
-        });
+        Self::load_keys_from_storage_deferred(ctx);
     }
 
-    fn load_keys_from_secure_storage(ctx: &mut ModelContext<Self>) -> ApiKeys {
-        let key_json = match ctx.secure_storage().read_value(SECURE_STORAGE_KEY) {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_keys_from_storage_deferred(ctx: &mut ModelContext<Self>) {
+        let storage_path = Self::api_keys_storage_path();
+        let _ = ctx.spawn(
+            async move { Self::load_keys_from_disk(storage_path).await },
+            |me, keys, ctx| {
+                if keys != me.keys {
+                    me.keys = keys;
+                    ctx.emit(ApiKeyManagerEvent::KeysUpdated);
+                }
+            },
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn load_keys_from_storage_deferred(_ctx: &mut ModelContext<Self>) {}
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn api_keys_storage_path() -> PathBuf {
+        dirs::data_local_dir()
+            .unwrap_or_default()
+            .join("warp")
+            .join(API_KEYS_STORAGE_FILE_NAME)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn load_keys_from_disk(path: PathBuf) -> ApiKeys {
+        let key_json = match async_fs::read_to_string(&path).await {
             Ok(json) => json,
             Err(e) => {
-                if !matches!(e, secure_storage::Error::NotFound) {
-                    log::error!("Failed to read API keys from secure storage: {e:#}");
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    log::error!("Failed to read API keys from {}: {e:#}", path.display());
                 }
                 return ApiKeys::default();
             }
         };
 
-        match serde_json::from_str(&key_json) {
+        Self::deserialize_keys(&key_json)
+    }
+
+    fn deserialize_keys(key_json: &str) -> ApiKeys {
+        match serde_json::from_str(key_json) {
             Ok(keys) => keys,
             Err(e) => {
                 log::error!("Failed to deserialize API keys: {e:#}");
@@ -377,6 +402,11 @@ impl ApiKeyManager {
     }
 
     fn write_keys_to_secure_storage(&mut self, ctx: &mut ModelContext<Self>) {
+        self.write_keys_to_storage(ctx);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_keys_to_storage(&mut self, ctx: &mut ModelContext<Self>) {
         let json = match serde_json::to_string(&self.keys) {
             Ok(json) => json,
             Err(e) => {
@@ -386,22 +416,31 @@ impl ApiKeyManager {
         };
         self.secure_storage_write_version += 1;
         let write_version = self.secure_storage_write_version;
+        let storage_path = Self::api_keys_storage_path();
 
-        // Defer the keychain write so it doesn't block the current event
-        // processing. The in-memory state is already updated and events
-        // already emitted, so the UI updates immediately while the
-        // potentially slow platform secure-storage call runs in a
-        // subsequent main-thread callback. Skip stale callbacks so older
-        // writes cannot complete after and overwrite a newer payload.
-        ctx.spawn(async move { json }, move |me, json, ctx| {
-            if write_version != me.secure_storage_write_version {
-                return;
-            }
-            if let Err(e) = ctx.secure_storage().write_value(SECURE_STORAGE_KEY, &json) {
-                log::error!("Failed to write API keys to secure storage: {e:#}");
-            }
-        });
+        // Persist API keys to local disk on the background executor. The local-only
+        // build must not touch the macOS Keychain on the main thread: on some
+        // machines Security.framework can block indefinitely during launch.
+        ctx.spawn(
+            async move {
+                if let Some(parent) = storage_path.parent() {
+                    async_fs::create_dir_all(parent).await?;
+                }
+                async_fs::write(&storage_path, json).await
+            },
+            move |me, result, _ctx| {
+                if write_version != me.secure_storage_write_version {
+                    return;
+                }
+                if let Err(e) = result {
+                    log::error!("Failed to write API keys: {e:#}");
+                }
+            },
+        );
     }
+
+    #[cfg(target_arch = "wasm32")]
+    fn write_keys_to_storage(&mut self, _ctx: &mut ModelContext<Self>) {}
 }
 
 impl Entity for ApiKeyManager {
