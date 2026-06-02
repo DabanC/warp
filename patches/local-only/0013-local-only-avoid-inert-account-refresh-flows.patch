@@ -1,7 +1,7 @@
 From ce1a8b6806e1804a7470090ed8ee8a2649644485 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sat, 23 May 2026 11:51:16 +0800
-Subject: [PATCH 13/27] local-only: avoid inert account refresh flows
+Subject: [PATCH 13/28] local-only: avoid inert account refresh flows
 
 ---
  app/src/ai/agent_sdk/admin.rs       | 105 +++++++---------------------

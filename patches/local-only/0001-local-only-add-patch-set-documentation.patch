@@ -1,7 +1,7 @@
 From f9d9f9e64861abd2b37df459b854b11cdde727b6 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Thu, 21 May 2026 20:18:52 +0800
-Subject: [PATCH 01/27] local-only: add patch set documentation
+Subject: [PATCH 01/28] local-only: add patch set documentation
 
 ---
  patches/local-only/README.md | 51 ++++++++++++++++++++++++++++++++++++
