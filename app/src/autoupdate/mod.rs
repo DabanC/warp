@@ -138,26 +138,12 @@ impl AutoupdateState {
     ///
     /// Must be called explicitly once onboarding (if any) has completed. For returning users
     /// who bypass onboarding, this should be called during app startup.
-    pub fn start_polling(&mut self, ctx: &mut ModelContext<Self>) {
-        if self.polling_started {
-            return;
-        }
-        if FeatureFlag::Autoupdate.is_enabled() && AppExecutionMode::as_ref(ctx).can_autoupdate() {
-            log::info!("Starting autoupdate polling loop");
-            self.polling_started = true;
-            // Initiate the polling loop.
-            self.poll_for_update(ctx);
-            // Queue a possible update check when the app gets activated, i.e. focused.
-            let state_handle = WindowManager::handle(ctx);
-            ctx.subscribe_to_model(&state_handle, |me, event, ctx| {
-                let windowing::StateEvent::ValueChanged { current, previous } = event;
-                if previous.stage == ApplicationStage::Inactive
-                    && current.stage == ApplicationStage::Active
-                {
-                    me.enqueue_request(RequestType::DailyCheck, ctx);
-                }
-            });
-        }
+    pub fn start_polling(&mut self, _ctx: &mut ModelContext<Self>) {
+        // Local-only: never start the autoupdate polling loop. Background update
+        // checks contact a remote endpoint, which is forbidden in local-only
+        // builds. Leaving `polling_started` == false also gates any queued
+        // manual/daily checks in `get_next_request`, so no version-check request
+        // is ever sent.
     }
 
     /// Check if any requests are pending. If there are and we're ready to submit a new request,
