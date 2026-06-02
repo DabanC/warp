@@ -1,7 +1,7 @@
 From d07d635d540ded67ad8d2e8e3fc1695eb1e64d55 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Wed, 3 Jun 2026 01:25:12 +0800
-Subject: [PATCH 29/29] local-only: stop background autoupdate checks
+Subject: [PATCH 29/30] local-only: stop background autoupdate checks
 
 ---
  app/src/autoupdate/mod.rs | 26 ++++++--------------------

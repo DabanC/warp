@@ -27,3 +27,4 @@
 0027-local-only-avoid-keychain-reads-during-launch.patch
 0028-local-only-route-AI-to-custom-providers.patch
 0029-local-only-stop-background-autoupdate-checks.patch
+0030-local-only-stop-background-telemetry-uploads.patch

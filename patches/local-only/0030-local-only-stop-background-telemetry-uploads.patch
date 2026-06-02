@@ -1,0 +1,39 @@
+From dfee53ef86f028ed28d38b38167fb1aca9e752e4 Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Wed, 3 Jun 2026 01:57:27 +0800
+Subject: [PATCH 30/30] local-only: stop background telemetry uploads
+
+---
+ app/src/server/telemetry/collector.rs | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/app/src/server/telemetry/collector.rs b/app/src/server/telemetry/collector.rs
+index a18dd4d8..b75487d7 100644
+--- a/app/src/server/telemetry/collector.rs
++++ b/app/src/server/telemetry/collector.rs
+@@ -45,6 +45,13 @@ impl TelemetryCollector {
+     }
+ 
+     pub fn initialize_telemetry_collection(&self, ctx: &mut ModelContext<TelemetryCollector>) {
++        // Local-only: builds ship with `telemetry_config: None`, so there is no
++        // Rudderstack destination. Skip starting any background flush/active-usage
++        // tasks so startup performs no telemetry upload requests.
++        if !ChannelState::is_telemetry_available() {
++            return;
++        }
++
+         // Start a background thread to periodically flush events from the telemetry event queue.
+         if ChannelState::is_release_bundle() || FeatureFlag::WithSandboxTelemetry.is_enabled() {
+             // Flush the events to Rudderstack that were persisted into a file the last time the app was
+@@ -104,7 +111,7 @@ impl TelemetryCollector {
+     pub fn flush_telemetry_events_for_shutdown(&self, ctx: &mut ModelContext<TelemetryCollector>) {
+         let execution_mode = AppExecutionMode::as_ref(ctx);
+ 
+-        if execution_mode.send_telemetry_at_shutdown() {
++        if ChannelState::is_telemetry_available() && execution_mode.send_telemetry_at_shutdown() {
+             let privacy_settings_snapshot = PrivacySettings::as_ref(ctx).get_snapshot(ctx);
+             let server_api = self.server_api.clone();
+             match warpui::r#async::block_on(async move {
+-- 
+2.53.0
+

@@ -1,7 +1,7 @@
 From 8d1f096940084c8d430ff81e3d08c7ac241b11c2 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sat, 23 May 2026 14:01:36 +0800
-Subject: [PATCH 20/29] local-only: remove residual account UI entry points
+Subject: [PATCH 20/30] local-only: remove residual account UI entry points
 
 ---
  app/src/auth/auth_manager.rs       |  34 +--
