@@ -1,7 +1,7 @@
 From dbb7e7d852d28b44d610cc0ea9a84e1732b286d2 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sun, 24 May 2026 15:39:11 +0800
-Subject: [PATCH 27/28] local-only: avoid keychain reads during launch
+Subject: [PATCH 27/29] local-only: avoid keychain reads during launch
 
 ---
  crates/ai/src/api_keys.rs       | 19 +++++++++++++++----

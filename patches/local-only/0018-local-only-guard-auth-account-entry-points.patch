@@ -1,7 +1,7 @@
 From 4f26f4a610cc2daefbd2fca3029fc1d8aa1deb68 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sat, 23 May 2026 12:48:54 +0800
-Subject: [PATCH 18/28] local-only: guard auth account entry points
+Subject: [PATCH 18/29] local-only: guard auth account entry points
 
 ---
  .../auth_manager/user_persistence_tests.rs    | 85 -------------------

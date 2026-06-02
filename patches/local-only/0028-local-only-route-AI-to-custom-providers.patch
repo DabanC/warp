@@ -1,7 +1,7 @@
 From 2cfa5241dd2799b9f759111eaed0cb3d4e494e30 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Wed, 27 May 2026 02:42:10 +0800
-Subject: [PATCH 28/28] local-only: route AI to custom providers
+Subject: [PATCH 28/29] local-only: route AI to custom providers
 
 Keep local-only AI off Warp auth by calling configured custom endpoints directly, avoid keychain-backed API key storage during launch, and remove user avatars from agent prompts.
 ---

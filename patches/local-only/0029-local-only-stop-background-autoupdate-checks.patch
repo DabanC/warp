@@ -1,0 +1,49 @@
+From d07d635d540ded67ad8d2e8e3fc1695eb1e64d55 Mon Sep 17 00:00:00 2001
+From: DabanC <duchuanwei@cmstop.com>
+Date: Wed, 3 Jun 2026 01:25:12 +0800
+Subject: [PATCH 29/29] local-only: stop background autoupdate checks
+
+---
+ app/src/autoupdate/mod.rs | 26 ++++++--------------------
+ 1 file changed, 6 insertions(+), 20 deletions(-)
+
+diff --git a/app/src/autoupdate/mod.rs b/app/src/autoupdate/mod.rs
+index 6b23dcfb..dab9f608 100644
+--- a/app/src/autoupdate/mod.rs
++++ b/app/src/autoupdate/mod.rs
+@@ -138,26 +138,12 @@ impl AutoupdateState {
+     ///
+     /// Must be called explicitly once onboarding (if any) has completed. For returning users
+     /// who bypass onboarding, this should be called during app startup.
+-    pub fn start_polling(&mut self, ctx: &mut ModelContext<Self>) {
+-        if self.polling_started {
+-            return;
+-        }
+-        if FeatureFlag::Autoupdate.is_enabled() && AppExecutionMode::as_ref(ctx).can_autoupdate() {
+-            log::info!("Starting autoupdate polling loop");
+-            self.polling_started = true;
+-            // Initiate the polling loop.
+-            self.poll_for_update(ctx);
+-            // Queue a possible update check when the app gets activated, i.e. focused.
+-            let state_handle = WindowManager::handle(ctx);
+-            ctx.subscribe_to_model(&state_handle, |me, event, ctx| {
+-                let windowing::StateEvent::ValueChanged { current, previous } = event;
+-                if previous.stage == ApplicationStage::Inactive
+-                    && current.stage == ApplicationStage::Active
+-                {
+-                    me.enqueue_request(RequestType::DailyCheck, ctx);
+-                }
+-            });
+-        }
++    pub fn start_polling(&mut self, _ctx: &mut ModelContext<Self>) {
++        // Local-only: never start the autoupdate polling loop. Background update
++        // checks contact a remote endpoint, which is forbidden in local-only
++        // builds. Leaving `polling_started` == false also gates any queued
++        // manual/daily checks in `get_next_request`, so no version-check request
++        // is ever sent.
+     }
+ 
+     /// Check if any requests are pending. If there are and we're ready to submit a new request,
+-- 
+2.53.0
+

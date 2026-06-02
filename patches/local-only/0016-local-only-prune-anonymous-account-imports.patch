@@ -1,7 +1,7 @@
 From cc4d6e01de9316fec41f1cd589b88f9e7b09e20c Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sat, 23 May 2026 12:35:28 +0800
-Subject: [PATCH 16/28] local-only: prune anonymous account imports
+Subject: [PATCH 16/29] local-only: prune anonymous account imports
 
 ---
  app/src/auth/user.rs              | 18 ------------------

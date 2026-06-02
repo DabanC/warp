@@ -1,7 +1,7 @@
 From 3964cb731b0fb790aecdebea1536322aa774b437 Mon Sep 17 00:00:00 2001
 From: DabanC <duchuanwei@cmstop.com>
 Date: Sun, 24 May 2026 02:37:24 +0800
-Subject: [PATCH 24/28] local-only: hide stale Warp Drive and Runs panels
+Subject: [PATCH 24/29] local-only: hide stale Warp Drive and Runs panels
 
 ---
  app/src/auth/auth_state.rs               |   2 +-
